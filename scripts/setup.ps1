@@ -1,42 +1,42 @@
 $ErrorActionPreference = "Stop"
 
-function Get-PythonCommand {
+function Get-PythonCandidate {
     if (Get-Command python -ErrorAction SilentlyContinue) {
-        return "python"
+        $version = [Version](& python -c "import sys; print('.'.join(map(str, sys.version_info[:3])))")
+        if ($version -ge [Version]"3.11.0") {
+            return @{
+                Command = "python"
+                Version = $version
+                Arguments = @()
+            }
+        }
     }
 
     if (Get-Command py -ErrorAction SilentlyContinue) {
-        return "py"
+        try {
+            $version = [Version](& py -3.11 -c "import sys; print('.'.join(map(str, sys.version_info[:3])))")
+            return @{
+                Command = "py"
+                Version = $version
+                Arguments = @("-3.11")
+            }
+        } catch {
+        }
     }
 
-    throw "Python topilmadi. Python 3.11 yoki undan yangi versiyani o‘rnating."
-}
-
-function Get-PythonVersion {
-    param (
-        [string]$PythonCommand
-    )
-
-    if ($PythonCommand -eq "py") {
-        return [Version](& py -c "import sys; print('.'.join(map(str, sys.version_info[:3])))")
-    }
-
-    return [Version](& python -c "import sys; print('.'.join(map(str, sys.version_info[:3])))")
+    throw "Python 3.11 yoki undan yangi interpreter topilmadi."
 }
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
-$pythonCommand = Get-PythonCommand
-$pythonVersion = Get-PythonVersion -PythonCommand $pythonCommand
-
-if ($pythonVersion -lt [Version]"3.11.0") {
-    throw "Python 3.11 yoki undan yangi versiya kerak. Topilgan: $pythonVersion"
-}
+$pythonCandidate = Get-PythonCandidate
 
 Set-Location $projectRoot
 
-& $pythonCommand -m venv .venv
-
 $venvPython = Join-Path $projectRoot ".venv\Scripts\python.exe"
+if (-not (Test-Path $venvPython)) {
+    & $pythonCandidate.Command @($pythonCandidate.Arguments + @("-m", "venv", ".venv"))
+}
+
 & $venvPython -m pip install --upgrade pip
 & $venvPython -m pip install -r requirements.txt
 

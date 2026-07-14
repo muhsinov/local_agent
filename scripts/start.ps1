@@ -7,20 +7,10 @@ if (-not (Test-Path $venvPython)) {
     throw ".venv topilmadi. Avval .\scripts\setup.ps1 ni ishga tushiring."
 }
 
-$envPath = Join-Path $projectRoot ".env"
-$hostValue = "127.0.0.1"
-$portValue = "8000"
-
-if (Test-Path $envPath) {
-    foreach ($line in Get-Content $envPath) {
-        if ($line -match '^\s*HOST\s*=\s*(.+)\s*$') {
-            $hostValue = $matches[1].Trim()
-        }
-        if ($line -match '^\s*PORT\s*=\s*(.+)\s*$') {
-            $portValue = $matches[1].Trim()
-        }
-    }
+Set-Location $projectRoot
+& $venvPython -c "from app.config import get_settings; settings = get_settings(); print(settings.host); print(settings.port)" | ForEach-Object -Begin { $values = @() } -Process { $values += $_ } -End {
+    $script:hostValue = if ($values.Count -ge 1 -and $values[0]) { $values[0] } else { "127.0.0.1" }
+    $script:portValue = if ($values.Count -ge 2 -and $values[1]) { $values[1] } else { "8000" }
 }
 
-Set-Location $projectRoot
 & $venvPython -m uvicorn app.main:app --host $hostValue --port $portValue --reload

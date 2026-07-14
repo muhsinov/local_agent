@@ -1,7 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -12,15 +12,15 @@ class Settings(BaseSettings):
     app_name: str = Field(default="Local Agent Demo", alias="APP_NAME")
     app_version: str = Field(default="0.1.0", alias="APP_VERSION")
     host: str = Field(default="127.0.0.1", alias="HOST")
-    port: int = Field(default=8000, alias="PORT")
+    port: int = Field(default=8000, alias="PORT", ge=1, le=65535)
     database_path: Path = Field(default=Path("data/local_agent.db"), alias="DATABASE_PATH")
     upload_directory: Path = Field(default=Path("data/uploads"), alias="UPLOAD_DIRECTORY")
     vector_store_directory: Path = Field(default=Path("data/vector_store"), alias="VECTOR_STORE_DIRECTORY")
     ollama_base_url: str = Field(default="http://localhost:11434", alias="OLLAMA_BASE_URL")
     ollama_model: str = Field(default="qwen3:1.7b", alias="OLLAMA_MODEL")
-    request_timeout_seconds: int = Field(default=90, alias="REQUEST_TIMEOUT_SECONDS")
-    max_agent_iterations: int = Field(default=5, alias="MAX_AGENT_ITERATIONS")
-    max_file_size_mb: int = Field(default=10, alias="MAX_FILE_SIZE_MB")
+    request_timeout_seconds: int = Field(default=90, alias="REQUEST_TIMEOUT_SECONDS", ge=1, le=300)
+    max_agent_iterations: int = Field(default=5, alias="MAX_AGENT_ITERATIONS", ge=1, le=10)
+    max_file_size_mb: int = Field(default=10, alias="MAX_FILE_SIZE_MB", ge=1, le=100)
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -34,6 +34,13 @@ class Settings(BaseSettings):
         if value.is_absolute():
             return value
         return (PROJECT_ROOT / value).resolve()
+
+    @field_validator("database_path", "upload_directory", "vector_store_directory", mode="after")
+    @classmethod
+    def validate_paths(cls, value: Path) -> Path:
+        if not str(value):
+            raise ValueError("Path qiymati bo'sh bo'lishi mumkin emas.")
+        return value
 
     @property
     def resolved_database_path(self) -> Path:
