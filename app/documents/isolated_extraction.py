@@ -4,7 +4,8 @@ import time
 from dataclasses import asdict
 from multiprocessing.connection import Connection
 from pathlib import Path
-from typing import Any, Callable
+from threading import RLock
+from typing import Any, Callable, TypeVar
 
 import psutil
 
@@ -17,11 +18,13 @@ from app.documents.models import ExtractedDocument
 ProcessFactory = Callable[..., multiprocessing.process.BaseProcess]
 MemoryReader = Callable[[int], int | None]
 SleepAwaitable = Callable[[float], Any]
+T = TypeVar("T")
 
 _PROCESSING_MESSAGE = "Hujjatni qayta ishlashda xatolik yuz berdi."
 _TIMEOUT_MESSAGE = "Hujjatni qayta ishlash vaqti tugadi."
 _MEMORY_MESSAGE = "Hujjatni qayta ishlash xotira limitidan oshdi."
 _ALLOWED_STATUSES = {"ready", "no_text"}
+_ASYNC_CLEANUP_TIMEOUT_SECONDS = 5.0
 
 
 def _worker_main(connection: Connection, file_path: str, file_type: str, settings_data: dict[str, Any]) -> None:
@@ -148,105 +151,149 @@ class ExtractionSupervisor:
         self.memory_reader = memory_reader or _default_memory_reader
         self.deadline = time.monotonic() + settings.document_extraction_timeout_seconds
         self.memory_limit_bytes = settings.document_extraction_memory_mb * 1024 * 1024
+        self._lock = RLock()
         self._started = False
         self._finished = False
         self._closed = False
+        self._termination_started = False
         self._terminated = False
 
     def start(self) -> None:
-        if self._started:
-            return
-        self.process.start()
-        self._started = True
-        self.child_connection.close()
+        with self._lock:
+            if self._started:
+                return
+            self.process.start()
+            self._started = True
+            self.child_connection.close()
 
     def is_alive(self) -> bool:
-        if not self._started or self._finished:
-            return False
-        return self.process.is_alive()
+        with self._lock:
+            if not self._started or self._finished:
+                return False
+            return self.process.is_alive()
 
-    def _join_bounded(self, timeout: float = 5.0) -> None:
+    def _join_locked(self, timeout: float = 5.0) -> None:
         if not self._started or self._finished:
             return
         self.process.join(timeout)
         if not self.process.is_alive():
             self._finished = True
+            self._terminated = self._termination_started or self._terminated
 
-    def _recv_payload(self) -> Any:
+    def _recv_payload_locked(self) -> Any:
         try:
             return self.parent_connection.recv()
         except (EOFError, BrokenPipeError, OSError, ValueError):
             raise _safe_processing_error() from None
 
-    def _poll_payload_ready(self) -> bool:
+    def _poll_payload_ready_locked(self) -> bool:
         try:
             return bool(self.parent_connection.poll(0))
         except (EOFError, BrokenPipeError, OSError):
             return False
 
-    def _check_limits(self) -> None:
+    def _terminate_locked(self, timeout: float = 5.0) -> None:
+        if not self._started or self._terminated:
+            return
+        self._termination_started = True
+        try:
+            if self.process.is_alive():
+                self.process.terminate()
+            self.process.join(timeout)
+            if self.process.is_alive():
+                self.process.kill()
+                self.process.join(timeout)
+            if not self.process.is_alive():
+                self._finished = True
+                self._terminated = True
+        except Exception:
+            self._termination_started = False
+            raise
+
+    def _check_limits_locked(self) -> None:
         if time.monotonic() >= self.deadline:
-            self.terminate()
+            self._terminate_locked()
             raise ApiError(500, "DOCUMENT_EXTRACTION_TIMEOUT", _TIMEOUT_MESSAGE)
         if self.process.pid is not None:
             rss = self.memory_reader(self.process.pid)
             if rss is not None and rss > self.memory_limit_bytes:
-                self.terminate()
+                self._terminate_locked()
                 raise ApiError(500, "DOCUMENT_EXTRACTION_MEMORY_LIMIT", _MEMORY_MESSAGE)
 
     def step(self) -> ExtractedDocument | None:
-        if self._poll_payload_ready():
-            payload = self._recv_payload()
-            self._join_bounded()
-            return _parse_worker_payload(payload)
-        if not self.is_alive():
-            self._join_bounded()
-            if self._poll_payload_ready():
-                payload = self._recv_payload()
+        with self._lock:
+            if self._poll_payload_ready_locked():
+                payload = self._recv_payload_locked()
+                self._join_locked()
                 return _parse_worker_payload(payload)
-            raise _safe_processing_error()
-        self._check_limits()
-        return None
+            if not self._started:
+                raise _safe_processing_error()
+            if not self.process.is_alive():
+                self._join_locked()
+                if self._poll_payload_ready_locked():
+                    payload = self._recv_payload_locked()
+                    return _parse_worker_payload(payload)
+                raise _safe_processing_error()
+            self._check_limits_locked()
+            return None
 
     def terminate(self, timeout: float = 5.0) -> None:
-        if not self._started or self._terminated:
-            return
-        self._terminated = True
-        if self.process.is_alive():
-            self.process.terminate()
-        self.process.join(timeout)
-        if self.process.is_alive():
-            self.process.kill()
-            self.process.join(timeout)
-        if not self.process.is_alive():
-            self._finished = True
+        with self._lock:
+            self._terminate_locked(timeout)
 
     def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        try:
-            self.parent_connection.close()
-        finally:
-            try:
-                self.child_connection.close()
-            except OSError:
+        with self._lock:
+            if self._closed:
                 return
+            if self._started and not self._finished and self.process.is_alive():
+                return
+            self._closed = True
+            try:
+                self.parent_connection.close()
+            finally:
+                try:
+                    self.child_connection.close()
+                except OSError:
+                    return
 
-    async def start_async(self) -> None:
-        await asyncio.to_thread(self.start)
 
-    async def is_alive_async(self) -> bool:
-        return await asyncio.to_thread(self.is_alive)
+class AsyncExtractionSupervisor:
+    """Serialize async thread-offloaded access to a sync supervisor."""
 
-    async def step_async(self) -> ExtractedDocument | None:
-        return await asyncio.to_thread(self.step)
+    def __init__(self, supervisor: ExtractionSupervisor) -> None:
+        self._supervisor = supervisor
+        self._operation_lock = asyncio.Lock()
 
-    async def terminate_async(self) -> None:
-        await asyncio.to_thread(self.terminate)
+    async def _await_thread_operation_safely(self, operation: asyncio.Task[T]) -> T:
+        try:
+            return await asyncio.shield(operation)
+        except asyncio.CancelledError:
+            try:
+                await asyncio.wait_for(asyncio.shield(operation), timeout=_ASYNC_CLEANUP_TIMEOUT_SECONDS)
+            except asyncio.TimeoutError:
+                print("Document cleanup failed.")
+                raise
+            raise
 
-    async def close_async(self) -> None:
-        await asyncio.to_thread(self.close)
+    async def _run_operation(self, function: Callable[..., T], *args: Any) -> T:
+        async with self._operation_lock:
+            operation: asyncio.Task[T] = asyncio.create_task(asyncio.to_thread(function, *args))
+            return await self._await_thread_operation_safely(operation)
+
+    async def start(self) -> None:
+        await self._run_operation(self._supervisor.start)
+
+    async def step(self) -> ExtractedDocument | None:
+        return await self._run_operation(self._supervisor.step)
+
+    async def is_alive(self) -> bool:
+        return await self._run_operation(self._supervisor.is_alive)
+
+    async def terminate(self) -> None:
+        await self._run_operation(self._supervisor.terminate)
+
+    async def close(self) -> None:
+        await self._run_operation(self._supervisor.close)
 
 
 def extract_document_isolated(
@@ -300,18 +347,19 @@ async def extract_document_isolated_async(
         process_factory=process_factory,
         memory_reader=memory_reader,
     )
+    async_supervisor = AsyncExtractionSupervisor(supervisor)
     sleeper = sleep or asyncio.sleep
     try:
-        await supervisor.start_async()
+        await async_supervisor.start()
         while True:
-            result = await supervisor.step_async()
+            result = await async_supervisor.step()
             if result is not None:
                 return result
             await sleeper(poll_interval_seconds)
     except asyncio.CancelledError:
-        await asyncio.shield(supervisor.terminate_async())
+        await asyncio.shield(async_supervisor.terminate())
         raise
     finally:
-        if await supervisor.is_alive_async():
-            await asyncio.shield(supervisor.terminate_async())
-        await asyncio.shield(supervisor.close_async())
+        if await async_supervisor.is_alive():
+            await asyncio.shield(async_supervisor.terminate())
+        await asyncio.shield(async_supervisor.close())

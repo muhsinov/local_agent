@@ -11,6 +11,8 @@ from pypdf import PdfWriter
 from app.api.errors import ApiError
 from app.documents.extractor import extract_document
 from app.documents.isolated_extraction import (
+    AsyncExtractionSupervisor,
+    ExtractionSupervisor,
     extract_document_isolated,
     extract_document_isolated_async,
 )
@@ -175,9 +177,20 @@ class SlowLifecycleProcess:
         self.killed = False
         self.joined = False
         self.closed = False
+        self.concurrent_violations = 0
+        self._in_operation = False
         SlowLifecycleProcess.instances.append(self)
 
+    def _enter(self):
+        if self._in_operation:
+            self.concurrent_violations += 1
+        self._in_operation = True
+
+    def _leave(self):
+        self._in_operation = False
+
     def start(self):
+        self._enter()
         if self._start_gate is not None:
             self._start_gate.set()
             if self._release_gate is not None:
@@ -187,28 +200,35 @@ class SlowLifecycleProcess:
             self._connection.send(self._payload)
             self._alive = False
             self.exitcode = 0
+        self._leave()
 
     def is_alive(self):
         return self._alive
 
     def join(self, timeout=None):
+        self._enter()
         self.joined = True
         if self._delay_on_join and self._release_gate is not None:
             self._release_gate.wait(timeout=1)
         if not self._alive:
             self.exitcode = 0 if self.exitcode is None else self.exitcode
+        self._leave()
 
     def terminate(self):
+        self._enter()
         self.terminated = True
         if self._delay_on_terminate and self._release_gate is not None:
             self._release_gate.wait(timeout=1)
         self._alive = False
         self.exitcode = -15
+        self._leave()
 
     def kill(self):
+        self._enter()
         self.killed = True
         self._alive = False
         self.exitcode = -9
+        self._leave()
 
 
 def slow_lifecycle_factory(**kwargs):
@@ -479,6 +499,196 @@ def test_extract_document_isolated_async_cancellation_terminates_process(tmp_pat
     assert HangingProcess.instances[-1].terminated is True
 
 
+def test_extract_document_isolated_async_cancellation_during_start_terminates_process(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    path = tmp_path / "sample.txt"
+    path.write_text("hello", encoding="utf-8")
+    SlowLifecycleProcess.instances.clear()
+    started = threading.Event()
+    release = threading.Event()
+
+    async def run_test() -> None:
+        task = asyncio.create_task(
+            extract_document_isolated_async(
+                path,
+                "txt",
+                settings,
+                process_factory=slow_lifecycle_factory(start_gate=started, release_gate=release),
+                poll_interval_seconds=0.0,
+            )
+        )
+        while not started.is_set():
+            await asyncio.sleep(0)
+        task.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run_test())
+    assert SlowLifecycleProcess.instances[-1].terminated is True
+
+
+def test_extract_document_isolated_async_cancellation_during_step_serializes_cleanup(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    path = tmp_path / "sample.txt"
+    path.write_text("hello", encoding="utf-8")
+    SlowLifecycleProcess.instances.clear()
+    release = threading.Event()
+
+    async def run_test() -> None:
+        task = asyncio.create_task(
+            extract_document_isolated_async(
+                path,
+                "txt",
+                settings,
+                process_factory=slow_lifecycle_factory(release_gate=release, delay_on_terminate=True),
+                poll_interval_seconds=0.0,
+            )
+        )
+        await asyncio.sleep(0)
+        task.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run_test())
+    assert SlowLifecycleProcess.instances[-1].concurrent_violations == 0
+
+
+def test_extract_document_isolated_async_cancellation_during_recv_does_not_close_parallel(monkeypatch, tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    path = tmp_path / "sample.txt"
+    path.write_text("hello", encoding="utf-8")
+    payload = {"ok": True, "result": {"text": "hello", "char_count": 5, "status": "ready", "page_count": None, "warning_code": None}}
+    recv_started = threading.Event()
+    recv_release = threading.Event()
+    original_recv = ExtractionSupervisor._recv_payload_locked
+    original_close = ExtractionSupervisor.close
+    close_while_recv = {"value": False}
+
+    def slow_recv(self):
+        recv_started.set()
+        recv_release.wait(timeout=1)
+        return original_recv(self)
+
+    def tracked_close(self):
+        if recv_started.is_set() and not recv_release.is_set():
+            close_while_recv["value"] = True
+        return original_close(self)
+
+    monkeypatch.setattr(ExtractionSupervisor, "_recv_payload_locked", slow_recv)
+    monkeypatch.setattr(ExtractionSupervisor, "close", tracked_close)
+
+    async def run_test() -> None:
+        task = asyncio.create_task(
+            extract_document_isolated_async(
+                path,
+                "txt",
+                settings,
+                process_factory=payload_process_factory(payload),
+                poll_interval_seconds=0.0,
+            )
+        )
+        while not recv_started.is_set():
+            await asyncio.sleep(0)
+        task.cancel()
+        recv_release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run_test())
+    assert close_while_recv["value"] is False
+
+
+def test_terminate_exception_allows_retry(monkeypatch, tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    path = tmp_path / "sample.txt"
+    path.write_text("hello", encoding="utf-8")
+    supervisor = ExtractionSupervisor(path, "txt", settings, process_factory=HangingProcess)
+    supervisor.start()
+    calls = {"count": 0}
+    original_terminate = supervisor.process.terminate
+
+    def flaky_terminate():
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise OSError("fail once")
+        original_terminate()
+
+    supervisor.process.terminate = flaky_terminate
+    with pytest.raises(OSError):
+        supervisor.terminate()
+    assert supervisor._terminated is False
+    supervisor.terminate()
+    assert supervisor._terminated is True
+
+
+def test_start_exception_does_not_terminate_invalid_process(monkeypatch, tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    path = tmp_path / "sample.txt"
+    path.write_text("hello", encoding="utf-8")
+    supervisor = ExtractionSupervisor(path, "txt", settings, process_factory=HangingProcess)
+
+    def broken_start():
+        raise OSError("start failed")
+
+    supervisor.process.start = broken_start
+    with pytest.raises(OSError):
+        supervisor.start()
+    assert supervisor._started is False
+
+
+def test_async_supervisor_serializes_single_thread_operation(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    path = tmp_path / "sample.txt"
+    path.write_text("hello", encoding="utf-8")
+    SlowLifecycleProcess.instances.clear()
+    release = threading.Event()
+    supervisor = ExtractionSupervisor(path, "txt", settings, process_factory=slow_lifecycle_factory(release_gate=release, delay_on_terminate=True))
+    async_supervisor = AsyncExtractionSupervisor(supervisor)
+
+    async def run_test() -> None:
+        await async_supervisor.start()
+        terminate_task = asyncio.create_task(async_supervisor.terminate())
+        close_task = asyncio.create_task(async_supervisor.close())
+        await asyncio.sleep(0)
+        release.set()
+        await terminate_task
+        await close_task
+
+    asyncio.run(run_test())
+    assert SlowLifecycleProcess.instances[-1].concurrent_violations == 0
+
+
+def test_double_cancellation_keeps_cleanup_complete(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    path = tmp_path / "sample.txt"
+    path.write_text("hello", encoding="utf-8")
+    SlowLifecycleProcess.instances.clear()
+    release = threading.Event()
+
+    async def run_test() -> None:
+        task = asyncio.create_task(
+            extract_document_isolated_async(
+                path,
+                "txt",
+                settings,
+                process_factory=slow_lifecycle_factory(release_gate=release, delay_on_terminate=True),
+                poll_interval_seconds=0.0,
+            )
+        )
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run_test())
+    assert SlowLifecycleProcess.instances[-1].terminated is True
+
+
 def test_extract_document_isolated_async_start_does_not_block_event_loop(tmp_path: Path) -> None:
     settings = build_settings(tmp_path)
     path = tmp_path / "sample.txt"
@@ -591,13 +801,13 @@ def test_extract_document_isolated_async_recv_does_not_block_event_loop(monkeypa
     beats: list[int] = []
     from app.documents.isolated_extraction import ExtractionSupervisor
 
-    original_recv = ExtractionSupervisor._recv_payload
+    original_recv = ExtractionSupervisor._recv_payload_locked
 
     def slow_recv(self):
         time.sleep(0.05)
         return original_recv(self)
 
-    monkeypatch.setattr(ExtractionSupervisor, "_recv_payload", slow_recv)
+    monkeypatch.setattr(ExtractionSupervisor, "_recv_payload_locked", slow_recv)
 
     async def run_test() -> None:
         extraction_task = asyncio.create_task(
