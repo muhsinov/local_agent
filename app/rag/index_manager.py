@@ -106,9 +106,10 @@ def get_vector_index_status(settings: Settings) -> VectorIndexStateSnapshot:
 def _fsync_file(path: Path) -> None:
     try:
         with open(path, "r+b") as handle:
+            handle.flush()
             os.fsync(handle.fileno())
-    except OSError:
-        return
+    except OSError as exc:
+        raise RagError(500, "VECTOR_INDEX_STORAGE_ERROR", "Vector index faylini diskka yozib bo'lmadi.") from exc
 
 
 def _cleanup_directory(path: Path) -> None:

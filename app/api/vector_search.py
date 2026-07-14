@@ -1,13 +1,11 @@
-import asyncio
 import sqlite3
-from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, Request
 
 from app.api.errors import ApiError
-from app.rag.async_operation import run_blocking_operation_safely
 from app.rag.exceptions import RagError
 from app.rag.index_manager import get_vector_index_status, rebuild_vector_index
+from app.rag.operation_coordinator import VectorOperationCoordinator
 from app.rag.search_service import semantic_search
 from app.schemas.vector_search import (
     VectorIndexRebuildResponse,
@@ -27,18 +25,22 @@ def _raise_rag_error(exc: RagError) -> None:
     raise ApiError(exc.status_code, exc.code, exc.message) from exc
 
 
-@asynccontextmanager
-async def _exclusive_vector_operation(request: Request):
+def _get_coordinator(request: Request) -> VectorOperationCoordinator:
+    return request.app.state.vector_operation_coordinator
+
+
+async def _run_vector_operation(request: Request, function, *args, **kwargs):
     settings = request.app.state.settings
-    lock = request.app.state.vector_index_lock
+    coordinator = _get_coordinator(request)
     try:
-        await asyncio.wait_for(lock.acquire(), timeout=settings.vector_index_busy_timeout_seconds)
+        return await coordinator.run(
+            function,
+            *args,
+            acquire_timeout_seconds=settings.vector_index_busy_timeout_seconds,
+            **kwargs,
+        )
     except TimeoutError as exc:
         raise ApiError(429, "VECTOR_INDEX_BUSY", "Vector index hozir band. Keyinroq qayta urinib ko'ring.") from exc
-    try:
-        yield
-    finally:
-        lock.release()
 
 
 def _map_database_error() -> ApiError:
@@ -57,15 +59,16 @@ async def index_document(request: Request, document_id: int) -> VectorIndexRebui
     if document.status != "ready" or document.char_count <= 0 or not document.text_path:
         raise ApiError(422, "DOCUMENT_HAS_NO_TEXT", "Tanlangan hujjat indexlash uchun tayyor emas.")
 
-    async with _exclusive_vector_operation(request):
-        try:
-            state = await run_blocking_operation_safely(rebuild_vector_index, settings, requested_document_id=document_id)
-        except RagError as exc:
-            _raise_rag_error(exc)
-        except sqlite3.Error:
-            raise _map_database_error() from None
-        except Exception:
-            raise ApiError(500, "VECTOR_INDEX_ERROR", "Vector index operation bajarilmadi.") from None
+    try:
+        state = await _run_vector_operation(request, rebuild_vector_index, settings, requested_document_id=document_id)
+    except ApiError:
+        raise
+    except RagError as exc:
+        _raise_rag_error(exc)
+    except sqlite3.Error:
+        raise _map_database_error() from None
+    except Exception:
+        raise ApiError(500, "VECTOR_INDEX_ERROR", "Vector index operation bajarilmadi.") from None
 
     write_audit_log(
         settings,
@@ -86,15 +89,16 @@ async def index_document(request: Request, document_id: int) -> VectorIndexRebui
 @router.post("/vector-index/rebuild", response_model=VectorIndexRebuildResponse)
 async def rebuild_index(request: Request) -> VectorIndexRebuildResponse:
     settings = request.app.state.settings
-    async with _exclusive_vector_operation(request):
-        try:
-            state = await run_blocking_operation_safely(rebuild_vector_index, settings)
-        except RagError as exc:
-            _raise_rag_error(exc)
-        except sqlite3.Error:
-            raise _map_database_error() from None
-        except Exception:
-            raise ApiError(500, "VECTOR_INDEX_ERROR", "Vector index operation bajarilmadi.") from None
+    try:
+        state = await _run_vector_operation(request, rebuild_vector_index, settings)
+    except ApiError:
+        raise
+    except RagError as exc:
+        _raise_rag_error(exc)
+    except sqlite3.Error:
+        raise _map_database_error() from None
+    except Exception:
+        raise ApiError(500, "VECTOR_INDEX_ERROR", "Vector index operation bajarilmadi.") from None
 
     write_audit_log(
         settings,
@@ -132,21 +136,23 @@ async def vector_search(request: Request, payload: VectorSearchRequest) -> Vecto
     if payload.top_k > settings.vector_search_max_k:
         raise ApiError(422, "VALIDATION_ERROR", "top_k ruxsat etilgan qiymatdan oshdi.")
 
-    async with _exclusive_vector_operation(request):
-        try:
-            results, generation_id, model_name, execution_time_ms = await run_blocking_operation_safely(
-                semantic_search,
-                settings,
-                query=payload.query,
-                top_k=payload.top_k,
-                document_ids=payload.document_ids,
-            )
-        except RagError as exc:
-            _raise_rag_error(exc)
-        except sqlite3.Error:
-            raise _map_database_error() from None
-        except Exception:
-            raise ApiError(500, "VECTOR_SEARCH_ERROR", "Semantic qidiruvni bajarib bo'lmadi.") from None
+    try:
+        results, generation_id, model_name, execution_time_ms = await _run_vector_operation(
+            request,
+            semantic_search,
+            settings,
+            query=payload.query,
+            top_k=payload.top_k,
+            document_ids=payload.document_ids,
+        )
+    except ApiError:
+        raise
+    except RagError as exc:
+        _raise_rag_error(exc)
+    except sqlite3.Error:
+        raise _map_database_error() from None
+    except Exception:
+        raise ApiError(500, "VECTOR_SEARCH_ERROR", "Semantic qidiruvni bajarib bo'lmadi.") from None
 
     write_audit_log(
         settings,

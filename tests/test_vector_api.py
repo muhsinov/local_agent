@@ -96,3 +96,51 @@ def test_vector_api_returns_busy_for_parallel_rebuild(monkeypatch, tmp_path) -> 
             first.result()
 
     assert busy_response.status_code == 429
+
+
+def test_vector_api_search_busy_while_background_rebuild_continues(monkeypatch, tmp_path) -> None:
+    settings = build_settings(tmp_path, EMBEDDING_DIMENSION=64, VECTOR_INDEX_BUSY_TIMEOUT_SECONDS=1)
+    initialize_database(settings)
+    app = create_app(settings)
+    app.state.ollama_client = FakeOllamaClient()
+
+    gate = __import__("threading").Event()
+
+    def slow_rebuild(*args, **kwargs):
+        gate.wait(timeout=2)
+        return type(
+            "State",
+            (),
+            {
+                "status": "ready",
+                "active_generation": "gen",
+                "dirty": False,
+                "document_count": 1,
+                "chunk_count": 1,
+                "embedding_model": "fake",
+                "embedding_dimension": 64,
+                "__dict__": {
+                    "status": "ready",
+                    "active_generation": "gen",
+                    "dirty": False,
+                    "document_count": 1,
+                    "chunk_count": 1,
+                    "embedding_model": "fake",
+                    "embedding_dimension": 64,
+                },
+            },
+        )()
+
+    monkeypatch.setattr("app.api.vector_search.rebuild_vector_index", slow_rebuild)
+
+    import concurrent.futures
+
+    with TestClient(app) as client:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(lambda: client.post("/vector-index/rebuild"))
+            second = pool.submit(lambda: client.post("/vector-search", json={"query": "a", "top_k": 1}))
+            busy_response = second.result()
+            gate.set()
+            first.result()
+
+    assert busy_response.status_code == 429
