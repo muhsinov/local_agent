@@ -1,7 +1,13 @@
 const healthStatus = document.getElementById("health-status");
+const modelStatus = document.getElementById("model-status");
+const chatStatus = document.getElementById("chat-status");
 const chatForm = document.getElementById("chat-form");
 const messageInput = document.getElementById("message-input");
 const chatHistory = document.getElementById("chat-history");
+const sendButton = document.getElementById("send-button");
+const loadingIndicator = document.getElementById("loading-indicator");
+
+let conversationId = null;
 
 async function loadHealthStatus() {
   try {
@@ -10,6 +16,31 @@ async function loadHealthStatus() {
     healthStatus.textContent = `${payload.status} / db: ${payload.database}`;
   } catch (error) {
     healthStatus.textContent = "unreachable";
+  }
+}
+
+async function loadModelStatus() {
+  try {
+    const response = await fetch("/model/status");
+    const payload = await response.json();
+
+    if (response.ok && payload.installed) {
+      modelStatus.textContent = `${payload.model} ready`;
+      chatStatus.textContent = "Local model tayyor.";
+      return;
+    }
+
+    if (payload.ollama === "unreachable") {
+      modelStatus.textContent = "Ollama unreachable";
+      chatStatus.textContent = "Ollama server ishlamayapti yoki ulanib bo‘lmadi.";
+      return;
+    }
+
+    modelStatus.textContent = `${payload.model} missing`;
+    chatStatus.textContent = "Model o‘rnatilmagan. scripts/prepare_ollama.ps1 orqali tayyorlang.";
+  } catch (error) {
+    modelStatus.textContent = "status error";
+    chatStatus.textContent = "Model statusni yuklab bo‘lmadi.";
   }
 }
 
@@ -25,20 +56,60 @@ function appendMessage(content, role) {
   chatHistory.scrollTop = chatHistory.scrollHeight;
 }
 
-chatForm.addEventListener("submit", (event) => {
-  event.preventDefault();
-  const content = messageInput.value.trim();
+function setLoadingState(isLoading) {
+  sendButton.disabled = isLoading;
+  messageInput.disabled = isLoading;
+  loadingIndicator.hidden = !isLoading;
+}
 
+async function submitChat() {
+  const content = messageInput.value.trim();
   if (!content) {
     return;
   }
 
   appendMessage(content, "user");
-  appendMessage(
-    "Local model hali ulanmagan. Keyingi bosqichda Ollama integratsiyasi qo‘shiladi.",
-    "system"
-  );
   messageInput.value = "";
+  setLoadingState(true);
+
+  try {
+    const response = await fetch("/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message: content,
+        conversation_id: conversationId,
+      }),
+    });
+    const payload = await response.json();
+
+    if (!response.ok) {
+      const detail = payload?.detail?.message || "Noma’lum xatolik yuz berdi.";
+      appendMessage(detail, "system");
+      return;
+    }
+
+    conversationId = payload.conversation_id;
+    appendMessage(payload.answer, "system");
+  } catch (error) {
+    appendMessage("Backend bilan bog‘lanib bo‘lmadi.", "system");
+  } finally {
+    setLoadingState(false);
+    messageInput.focus();
+  }
+}
+
+chatForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  await submitChat();
+});
+
+messageInput.addEventListener("keydown", async (event) => {
+  if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    await submitChat();
+  }
 });
 
 loadHealthStatus();
+loadModelStatus();

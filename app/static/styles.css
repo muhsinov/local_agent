@@ -145,6 +145,18 @@ h1 {
   gap: 12px;
 }
 
+.form-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.loading-indicator {
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
 textarea {
   width: 100%;
   resize: vertical;
@@ -164,6 +176,12 @@ button {
   color: white;
   font: inherit;
   cursor: pointer;
+}
+
+button:disabled,
+textarea:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
 }
 
 .sr-only {

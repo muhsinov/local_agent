@@ -1,14 +1,20 @@
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.api.chat import router as chat_router
+from app.api.errors import ApiError, error_response
 from app.api.health import router as health_router
+from app.api.model import router as model_router
 from app.config import PROJECT_ROOT, Settings, get_settings
 from app.database import initialize_database
+from app.llm.ollama_client import OllamaClient
 
 
 def ensure_runtime_directories(settings: Settings) -> None:
@@ -24,11 +30,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.settings = active_settings
+        created_client = False
+        if not hasattr(app.state, "ollama_client") or app.state.ollama_client is None:
+            app.state.ollama_client = OllamaClient(active_settings)
+            created_client = True
+        app.state.chat_semaphore = asyncio.Semaphore(1)
         ensure_runtime_directories(active_settings)
         yield
+        if created_client:
+            await app.state.ollama_client.close()
 
     app = FastAPI(title=active_settings.app_name, version=active_settings.app_version, lifespan=lifespan)
     app.state.settings = active_settings
+    app.state.ollama_client = None
+    app.state.chat_semaphore = None
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[
@@ -45,6 +60,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.mount("/static", StaticFiles(directory=static_directory), name="static")
     app.include_router(health_router)
+    app.include_router(model_router)
+    app.include_router(chat_router)
+
+    @app.exception_handler(ApiError)
+    async def handle_api_error(_: Request, exc: ApiError):
+        return error_response(exc.status_code, exc.code, exc.message)
+
+    @app.exception_handler(RequestValidationError)
+    async def handle_validation_error(_: Request, __: RequestValidationError):
+        return error_response(422, "VALIDATION_ERROR", "So'rov ma'lumotlari noto'g'ri.")
 
     @app.get("/", include_in_schema=False)
     def root() -> FileResponse:

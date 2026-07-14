@@ -1,25 +1,25 @@
 # Local Agent Demo
 
-`Local Agent Demo` Windows 10 va Python 3.11 uchun Docker'siz ishlaydigan minimal local agent poydevori. Ushbu bosqich FastAPI backend, SQLite init, oddiy chat UI va testlarni tayyorlaydi.
+`Local Agent Demo` Windows 10 va Python 3.11 uchun Docker'siz ishlaydigan lokal AI assistant poydevori. Bu bosqichda FastAPI backend, SQLite conversation storage, Ollama integratsiyasi va oddiy web chat UI mavjud.
 
-Primary specification: [TZ.md](D:/local_agent/TZ.md)
+Primary specification: [TZ.md](TZ.md)
 
-## Hozirgi bosqich imkoniyatlari
+## Hozirgi imkoniyatlar
 
-- FastAPI server va `/health` endpoint
-- `/` da oddiy chat interfeysi
-- `.env` orqali konfiguratsiya
-- SQLite bazasini avtomatik yaratish
-- `data/uploads` va `data/vector_store` kataloglarini tayyorlash
-- PowerShell setup, start, va system-check scriptlari
-- `pytest` bilan minimal test
-- LLM hali ulanmagan demo chat placeholder
+- `/health` endpoint
+- `/model/status` endpoint
+- `/chat` endpoint orqali real lokal model chat
+- SQLite'da conversation va messages tarixi
+- frontend orqali chat yuborish
+- PowerShell setup, start va Ollama tayyorlash scriptlari
+- `pytest` bilan mock asosidagi testlar
 
 ## Talablar
 
-- Windows 10 yoki yangi versiya
+- Windows 10 yoki yangi
 - Python 3.11+
-- PowerShell
+- Ollama o‘rnatilgan
+- Tavsiya etilgan model: `qwen3:1.7b`
 
 ## Setup
 
@@ -27,13 +27,23 @@ Primary specification: [TZ.md](D:/local_agent/TZ.md)
 .\scripts\setup.ps1
 ```
 
-Agar execution policy scriptni bloklasa, xavfsiz vaqtinchalik yechim:
+Execution policy muammosi bo‘lsa:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ```
 
-Keyin yana setup yoki start scriptni ishga tushiring.
+## Ollama tayyorlash
+
+```powershell
+.\scripts\prepare_ollama.ps1
+```
+
+Agar modelni qo‘lda yuklamoqchi bo‘lsangiz:
+
+```powershell
+ollama pull qwen3:1.7b
+```
 
 ## Start
 
@@ -41,46 +51,89 @@ Keyin yana setup yoki start scriptni ishga tushiring.
 .\scripts\start.ps1
 ```
 
-Bu bosqichda real LLM ulanmagan. UI xabar yuborganda placeholder javob qaytaradi.
-
 ## Test
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-## Browser URL
+## Browser va API
 
 - App: `http://127.0.0.1:8000/`
 - Health: `http://127.0.0.1:8000/health`
+- Model status: `http://127.0.0.1:8000/model/status`
+- Chat: `http://127.0.0.1:8000/chat`
 
-## Database schema version
+## Chat request namunasi
 
-SQLite database `schema version 1` bilan yaratiladi. Ilova startup vaqtida schema tekshiriladi; eski va bo'sh development schema topilsa xavfsiz qayta yaratiladi, ma'lumotli database esa avtomatik destructive migration qilinmaydi.
+```json
+{
+  "message": "Salom, o'zingni qisqa tanishtir",
+  "conversation_id": null
+}
+```
+
+## Chat response namunasi
+
+```json
+{
+  "conversation_id": 1,
+  "answer": "Salom, men sizning lokal AI assistentingizman.",
+  "model": "qwen3:1.7b",
+  "sources": [],
+  "tool_calls": [],
+  "execution_time_ms": 1840,
+  "usage": {
+    "prompt_tokens": 25,
+    "completion_tokens": 42
+  }
+}
+```
+
+## Model status namunasi
+
+```json
+{
+  "ollama": "ok",
+  "model": "qwen3:1.7b",
+  "installed": true
+}
+```
+
+## Ishlash cheklovlari
+
+- 8 GB RAM uchun bir vaqtning o‘zida faqat bitta chat request bajariladi
+- modelga faqat oxirgi 6 ta message yuboriladi
+- hozircha RAG yo‘q
+- hozircha tool calling yo‘q
+
+## Keng tarqalgan xatolar
+
+- Ollama topilmadi: `scripts/prepare_ollama.ps1` xato beradi, Ollama ilovasini o‘rnating
+- Ollama server ishlamayapti: Ollama app yoki service’ni ishga tushiring
+- Model o‘rnatilmagan: `ollama pull qwen3:1.7b`
+- Timeout: katta prompt yoki sekin model javobi
+- Port band: `8000` portni boshqa process ishlatmayotganini tekshiring
 
 ## Papka strukturasi
 
 ```text
 local_agent/
-├── app/
-├── data/
-├── scripts/
-├── tests/
-├── .env.example
-├── .gitignore
-├── README.md
-├── requirements.txt
-└── TZ.md
+|-- app/
+|-- docs/
+|-- data/
+|-- scripts/
+|-- tests/
+|-- .env.example
+|-- README.md
+|-- requirements.txt
+`-- TZ.md
 ```
 
-## Kelajakdagi bosqichlar
+## Hozircha yo‘q
 
-- Ollama chat integratsiyasi
-- RAG va vector store ishlatish
-- Hujjat yuklash oqimi
-- Audit va conversation funksiyalarini kengaytirish
-- Tool calling va agent orchestration
-
-## Eslatma
-
-Hozirgi bosqich faqat loyiha poydevori uchun. Ollama, chat backend, RAG, FAISS va document upload hali ulanmagan.
+- RAG
+- tool calling
+- embeddings
+- FAISS
+- document upload

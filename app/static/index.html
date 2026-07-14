@@ -21,7 +21,7 @@
                 </article>
                 <article class="status-card">
                     <span>Model status</span>
-                    <strong>Placeholder</strong>
+                    <strong id="model-status">Checking...</strong>
                 </article>
                 <article class="status-card accent">
                     <span>RAG</span>
@@ -33,17 +33,20 @@
         <section class="chat-shell">
             <div class="chat-header">
                 <h2>Chat</h2>
-                <p>Local model keyingi bosqichda ulanadi.</p>
+                <p id="chat-status">Local Ollama integratsiyasi tayyorlanmoqda.</p>
             </div>
             <div id="chat-history" class="chat-history" aria-live="polite">
                 <article class="message system">
-                    <p>Assalomu alaykum. Bu demo hozircha backend health va UI skeletini tekshiradi.</p>
+                    <p>Assalomu alaykum. Model tayyor bo‘lsa shu yerdan real lokal chat ishlaydi.</p>
                 </article>
             </div>
             <form id="chat-form" class="chat-form">
                 <label class="sr-only" for="message-input">Xabar</label>
                 <textarea id="message-input" name="message" rows="3" placeholder="Xabaringizni yozing..."></textarea>
-                <button type="submit">Send</button>
+                <div class="form-row">
+                    <span id="loading-indicator" class="loading-indicator" hidden>Yuborilmoqda...</span>
+                    <button id="send-button" type="submit">Send</button>
+                </div>
             </form>
         </section>
     </main>
