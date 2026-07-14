@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Local Agent Demo</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <main class="layout">
+        <section class="hero">
+            <div>
+                <p class="eyebrow">Phase 1 foundation</p>
+                <h1>Local Agent Demo</h1>
+                <p class="subtitle">Minimal FastAPI backend va oddiy frontend.</p>
+            </div>
+            <div class="status-grid">
+                <article class="status-card">
+                    <span>Backend health</span>
+                    <strong id="health-status">Checking...</strong>
+                </article>
+                <article class="status-card">
+                    <span>Model status</span>
+                    <strong>Placeholder</strong>
+                </article>
+                <article class="status-card accent">
+                    <span>RAG</span>
+                    <strong>Hali ulanmagan</strong>
+                </article>
+            </div>
+        </section>
+
+        <section class="chat-shell">
+            <div class="chat-header">
+                <h2>Chat</h2>
+                <p>Local model keyingi bosqichda ulanadi.</p>
+            </div>
+            <div id="chat-history" class="chat-history" aria-live="polite">
+                <article class="message system">
+                    <p>Assalomu alaykum. Bu demo hozircha backend health va UI skeletini tekshiradi.</p>
+                </article>
+            </div>
+            <form id="chat-form" class="chat-form">
+                <label class="sr-only" for="message-input">Xabar</label>
+                <textarea id="message-input" name="message" rows="3" placeholder="Xabaringizni yozing..."></textarea>
+                <button type="submit">Send</button>
+            </form>
+        </section>
+    </main>
+    <script src="/static/app.js"></script>
+</body>
+</html>
