@@ -69,7 +69,9 @@ h1 {
 }
 
 .status-card,
-.chat-shell {
+.chat-shell,
+.documents-shell,
+.preview-shell {
   border: 1px solid var(--line);
   border-radius: 22px;
   background: var(--panel);
@@ -97,6 +99,11 @@ h1 {
 }
 
 .chat-shell {
+  margin-top: 28px;
+  padding: 22px;
+}
+
+.documents-shell {
   margin-top: 28px;
   padding: 22px;
 }
@@ -143,6 +150,57 @@ h1 {
 .chat-form {
   display: grid;
   gap: 12px;
+}
+
+.documents-header,
+.preview-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: baseline;
+}
+
+.document-status {
+  color: var(--muted);
+}
+
+.document-form {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin: 16px 0;
+  flex-wrap: wrap;
+}
+
+.document-list {
+  display: grid;
+  gap: 12px;
+}
+
+.document-card {
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 14px 16px;
+  background: var(--panel-strong);
+}
+
+.document-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.preview-shell {
+  margin-top: 16px;
+  padding: 16px;
+}
+
+.document-preview {
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+  max-height: 280px;
+  overflow-y: auto;
 }
 
 .form-row {

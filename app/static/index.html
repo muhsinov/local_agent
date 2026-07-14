@@ -49,6 +49,28 @@
                 </div>
             </form>
         </section>
+
+        <section class="documents-shell">
+            <div class="documents-header">
+                <div>
+                    <h2>Documents</h2>
+                    <p>Upload, preview va delete mavjud. Chat hali hujjatlardan foydalanmaydi.</p>
+                </div>
+                <span id="document-status" class="document-status">Ready</span>
+            </div>
+            <form id="document-form" class="document-form">
+                <input id="document-input" type="file" accept=".pdf,.docx,.txt,.md">
+                <button id="upload-button" type="submit">Upload</button>
+            </form>
+            <div id="document-list" class="document-list"></div>
+            <article class="preview-shell">
+                <div class="preview-header">
+                    <h3>Preview</h3>
+                    <span id="preview-meta"></span>
+                </div>
+                <pre id="document-preview" class="document-preview">Preview hali tanlanmagan.</pre>
+            </article>
+        </section>
     </main>
     <script src="/static/app.js"></script>
 </body>

@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.chat import router as chat_router
+from app.api.documents import router as documents_router
 from app.api.errors import ApiError, error_response
 from app.api.health import router as health_router
 from app.api.model import router as model_router
@@ -19,6 +20,7 @@ from app.llm.ollama_client import OllamaClient
 
 def ensure_runtime_directories(settings: Settings) -> None:
     settings.resolved_upload_directory.mkdir(parents=True, exist_ok=True)
+    settings.resolved_extracted_text_directory.mkdir(parents=True, exist_ok=True)
     settings.resolved_vector_store_directory.mkdir(parents=True, exist_ok=True)
     initialize_database(settings)
 
@@ -37,6 +39,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 created_client = True
             if not hasattr(app.state, "chat_semaphore") or app.state.chat_semaphore is None:
                 app.state.chat_semaphore = asyncio.Semaphore(1)
+            if not hasattr(app.state, "document_semaphore") or app.state.document_semaphore is None:
+                app.state.document_semaphore = asyncio.Semaphore(1)
             ensure_runtime_directories(active_settings)
             yield
         finally:
@@ -47,6 +51,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = active_settings
     app.state.ollama_client = None
     app.state.chat_semaphore = None
+    app.state.document_semaphore = None
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[
@@ -65,6 +70,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health_router)
     app.include_router(model_router)
     app.include_router(chat_router)
+    app.include_router(documents_router)
 
     @app.exception_handler(ApiError)
     async def handle_api_error(_: Request, exc: ApiError):

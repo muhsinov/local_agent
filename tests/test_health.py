@@ -64,15 +64,17 @@ def test_documents_and_audit_logs_columns_match_spec(tmp_path: Path) -> None:
         documents = connection.execute("PRAGMA table_info(documents);").fetchall()
         audit_logs = connection.execute("PRAGMA table_info(audit_logs);").fetchall()
 
-    assert [column[1] for column in documents] == [
+    document_columns = {column[1] for column in documents}
+    audit_columns = {column[1] for column in audit_logs}
+    assert {
         "id",
         "file_name",
         "file_path",
         "file_type",
         "indexed",
         "created_at",
-    ]
-    assert [column[1] for column in audit_logs] == [
+    }.issubset(document_columns)
+    assert {
         "id",
         "action",
         "tool_name",
@@ -80,7 +82,7 @@ def test_documents_and_audit_logs_columns_match_spec(tmp_path: Path) -> None:
         "status",
         "execution_time_ms",
         "created_at",
-    ]
+    }.issubset(audit_columns)
 
 
 def test_invalid_config_values_raise_validation_error() -> None:

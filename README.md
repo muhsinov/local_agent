@@ -1,24 +1,38 @@
 # Local Agent Demo
 
-`Local Agent Demo` Windows 10 va Python 3.11 uchun Docker'siz ishlaydigan lokal AI assistant poydevori. Bu bosqichda FastAPI backend, SQLite conversation storage, Ollama integratsiyasi va oddiy web chat UI mavjud.
+`Local Agent Demo` Windows 10 va Python 3.11 uchun Docker'siz ishlaydigan lokal AI assistant poydevori. Hozir FastAPI backend, Ollama chat, SQLite conversation storage, xavfsiz document upload va text extraction mavjud.
 
 Primary specification: [TZ.md](TZ.md)
 
 ## Hozirgi imkoniyatlar
 
-- `/health` endpoint
-- `/model/status` endpoint
-- `/chat` endpoint orqali real lokal model chat
-- SQLite'da conversation va messages tarixi
-- frontend orqali chat yuborish
-- PowerShell setup, start va Ollama tayyorlash scriptlari
-- `pytest` bilan mock asosidagi testlar
+- `/health`
+- `/model/status`
+- `/chat`
+- `/documents/upload`
+- `/documents`
+- `/documents/{id}`
+- `/documents/{id}/text`
+- `DELETE /documents/{id}?confirm=true`
+
+## Dependency versiyalari
+
+- `fastapi==0.116.1`
+- `uvicorn==0.35.0`
+- `pydantic==2.11.7`
+- `pydantic-settings==2.10.1`
+- `python-dotenv==1.1.1`
+- `pytest==8.4.1`
+- `httpx==0.28.1`
+- `python-multipart==0.0.32`
+- `pypdf==6.1.4`
+- `python-docx==1.2.0`
 
 ## Talablar
 
 - Windows 10 yoki yangi
 - Python 3.11+
-- Ollama o‘rnatilgan
+- Ollama ixtiyoriy, lekin chat uchun kerak
 - Tavsiya etilgan model: `qwen3:1.7b`
 
 ## Setup
@@ -33,13 +47,13 @@ Execution policy muammosi bo‘lsa:
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ```
 
-## Ollama tayyorlash
+## Ollama
 
 ```powershell
 .\scripts\prepare_ollama.ps1
 ```
 
-Agar modelni qo‘lda yuklamoqchi bo‘lsangiz:
+Qo‘lda:
 
 ```powershell
 ollama pull qwen3:1.7b
@@ -57,83 +71,74 @@ ollama pull qwen3:1.7b
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-## Browser va API
+## Supported document formatlar
+
+- `.pdf`
+- `.docx`
+- `.txt`
+- `.md`
+
+Qo‘llab-quvvatlanmaydi: `.doc`, `.rtf`, `.odt`, `.html`, executable fayllar, noto‘g‘ri signature’li soxta fayllar.
+
+## Document limitlar
+
+- maksimal fayl hajmi: `MAX_FILE_SIZE_MB`
+- upload chunk: `UPLOAD_CHUNK_SIZE_KB`
+- PDF sahifa limiti: `MAX_PDF_PAGES`
+- PDF page content limiti: `MAX_PDF_PAGE_CONTENT_MB`
+- extracted text limiti: `MAX_EXTRACTED_CHARS`
+- DOCX archive limitlari: zip entry count, uncompressed size, compression ratio
+- scanned PDF uchun OCR yo‘q
+
+## API
 
 - App: `http://127.0.0.1:8000/`
 - Health: `http://127.0.0.1:8000/health`
 - Model status: `http://127.0.0.1:8000/model/status`
 - Chat: `http://127.0.0.1:8000/chat`
+- Upload: `POST /documents/upload`
+- List: `GET /documents?limit=50&offset=0`
+- Metadata: `GET /documents/{id}`
+- Preview: `GET /documents/{id}/text?limit=5000`
+- Delete: `DELETE /documents/{id}?confirm=true`
 
-## Chat request namunasi
+Windows PowerShell 5.1 `Invoke-RestMethod -Form` qo‘llamasa:
 
-```json
-{
-  "message": "Salom, o'zingni qisqa tanishtir",
-  "conversation_id": null
-}
+```powershell
+curl.exe -F "file=@sample.txt" http://127.0.0.1:8000/documents/upload
 ```
 
-## Chat response namunasi
+## Hozirgi cheklovlar
 
-```json
-{
-  "conversation_id": 1,
-  "answer": "Salom, men sizning lokal AI assistentingizman.",
-  "model": "qwen3:1.7b",
-  "sources": [],
-  "tool_calls": [],
-  "execution_time_ms": 1840,
-  "usage": {
-    "prompt_tokens": 25,
-    "completion_tokens": 42
-  }
-}
-```
+- chat hali upload qilingan hujjatlarni ishlatmaydi
+- RAG keyingi bosqich
+- embeddings yo‘q
+- FAISS yo‘q
+- tool calling yo‘q
+- document extraction bir vaqtning o‘zida faqat bitta request
+- chat bir vaqtning o‘zida faqat bitta request
 
-## Model status namunasi
+## Storage
 
-```json
-{
-  "ollama": "ok",
-  "model": "qwen3:1.7b",
-  "installed": true
-}
-```
+- raw upload fayllar: `data/uploads`
+- extracted text fayllar: `data/extracted`
+- bu fayllar Git’ga kirmaydi
+- API response’larda internal path yoki absolute Windows path qaytarilmaydi
 
-## Ishlash cheklovlari
+## Common errors
 
-- 8 GB RAM uchun bir vaqtning o‘zida faqat bitta chat request bajariladi
-- modelga faqat oxirgi 6 ta message yuboriladi
-- hozircha RAG yo‘q
-- hozircha tool calling yo‘q
+- `FILE_TOO_LARGE`
+- `UNSUPPORTED_FILE_TYPE`
+- `FILE_TYPE_MISMATCH`
+- `INVALID_TEXT_ENCODING`
+- `INVALID_PDF`
+- `PDF_ENCRYPTED`
+- `UNSAFE_DOCX_ARCHIVE`
+- `DOCUMENT_DUPLICATE`
+- `DOCUMENT_STORAGE_ERROR`
+- `DOCUMENT_PROCESSOR_BUSY`
+- `CONFIRMATION_REQUIRED`
 
-## Keng tarqalgan xatolar
+## Eslatma
 
-- Ollama topilmadi: `scripts/prepare_ollama.ps1` xato beradi, Ollama ilovasini o‘rnating
-- Ollama server ishlamayapti: Ollama app yoki service’ni ishga tushiring
-- Model o‘rnatilmagan: `ollama pull qwen3:1.7b`
-- Timeout: katta prompt yoki sekin model javobi
-- Port band: `8000` portni boshqa process ishlatmayotganini tekshiring
-
-## Papka strukturasi
-
-```text
-local_agent/
-|-- app/
-|-- docs/
-|-- data/
-|-- scripts/
-|-- tests/
-|-- .env.example
-|-- README.md
-|-- requirements.txt
-`-- TZ.md
-```
-
-## Hozircha yo‘q
-
-- RAG
-- tool calling
-- embeddings
-- FAISS
-- document upload
+Upload qilingan hujjatlar hozircha faqat saqlanadi, extract qilinadi, preview qilinadi va o‘chiriladi. Ular `/chat` promptiga ulanmagan.

@@ -2,5 +2,13 @@
 __pycache__/
 .pytest_cache/
 .env
-data/local_agent.db
+data/*.db
+data/uploads/*
+data/extracted/*
+data/vector_store/*
+!data/uploads/.gitkeep
+!data/extracted/.gitkeep
+!data/vector_store/.gitkeep
 *.pyc
+*.part
+*.delete-pending
