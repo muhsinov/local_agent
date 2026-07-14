@@ -1,6 +1,7 @@
 import gc
 import threading
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 
 import numpy as np
 
@@ -9,6 +10,14 @@ from app.rag.exceptions import RagError
 
 
 class EmbeddingModel(ABC):
+    @abstractmethod
+    def begin_operation(self) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def end_operation(self) -> None:
+        raise NotImplementedError
+
     @abstractmethod
     def encode_documents(self, texts: list[str]) -> np.ndarray:
         raise NotImplementedError
@@ -25,13 +34,34 @@ class EmbeddingModel(ABC):
     def close(self) -> None:
         raise NotImplementedError
 
+    @contextmanager
+    def session(self):
+        self.begin_operation()
+        try:
+            yield self
+        finally:
+            self.end_operation()
+
 
 class SentenceTransformerEmbeddingModel(EmbeddingModel):
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._lock = threading.RLock()
         self._model = None
-        self._module = None
+        self._operation_depth = 0
+
+    def begin_operation(self) -> None:
+        with self._lock:
+            self._operation_depth += 1
+
+    def end_operation(self) -> None:
+        should_close = False
+        with self._lock:
+            if self._operation_depth > 0:
+                self._operation_depth -= 1
+            should_close = self._operation_depth == 0 and not self._settings.embedding_keep_loaded
+        if should_close:
+            self.close()
 
     def _load_model_locked(self):
         if self._model is not None:
@@ -51,25 +81,30 @@ class SentenceTransformerEmbeddingModel(EmbeddingModel):
                 trust_remote_code=False,
                 local_files_only=self._settings.embedding_local_files_only,
             )
+            model.max_seq_length = self._settings.embedding_max_sequence_length
+            if hasattr(model, "eval"):
+                model.eval()
+            dimension = int(model.get_sentence_embedding_dimension())
+            if dimension != self._settings.embedding_dimension:
+                raise RagError(
+                    500,
+                    "EMBEDDING_MODEL_DIMENSION_MISMATCH",
+                    "Embedding model dimension qiymati kutilgan konfiguratsiyaga mos emas.",
+                )
+            self._model = model
+            return model
+        except RagError:
+            self._model = None
+            gc.collect()
+            raise
         except Exception as exc:
+            self._model = None
+            gc.collect()
             raise RagError(
                 503,
                 "EMBEDDING_MODEL_UNAVAILABLE",
                 "Embedding modelni yuklab bo'lmadi. prepare_embeddings.ps1 orqali tayyorlang.",
             ) from exc
-        model.max_seq_length = self._settings.embedding_max_sequence_length
-        if hasattr(model, "eval"):
-            model.eval()
-        dimension = int(model.get_sentence_embedding_dimension())
-        if dimension != self._settings.embedding_dimension:
-            raise RagError(
-                500,
-                "EMBEDDING_MODEL_DIMENSION_MISMATCH",
-                "Embedding model dimension qiymati kutilgan konfiguratsiyaga mos emas.",
-            )
-        self._module = SentenceTransformer
-        self._model = model
-        return model
 
     def _with_model(self):
         with self._lock:
@@ -105,9 +140,6 @@ class SentenceTransformerEmbeddingModel(EmbeddingModel):
             raise
         except Exception as exc:
             raise RagError(500, "EMBEDDING_INVALID_RESPONSE", "Embedding hisoblashda xatolik yuz berdi.") from exc
-        finally:
-            if not self._settings.embedding_keep_loaded:
-                self.close()
 
     def encode_documents(self, texts: list[str]) -> np.ndarray:
         return self._encode(texts)
@@ -117,12 +149,9 @@ class SentenceTransformerEmbeddingModel(EmbeddingModel):
 
     def get_dimension(self) -> int:
         model = self._with_model()
-        dimension = int(model.get_sentence_embedding_dimension())
-        if not self._settings.embedding_keep_loaded:
-            self.close()
-        return dimension
+        return int(model.get_sentence_embedding_dimension())
 
     def close(self) -> None:
         with self._lock:
             self._model = None
-            gc.collect()
+        gc.collect()

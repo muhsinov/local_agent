@@ -64,7 +64,7 @@ def ensure_parent_directory(database_path: Path) -> None:
 
 def get_connection(settings: Settings | None = None) -> sqlite3.Connection:
     active_settings = settings or get_settings()
-    connection = sqlite3.connect(active_settings.resolved_database_path)
+    connection = sqlite3.connect(active_settings.resolved_database_path, timeout=30)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON;")
     return connection

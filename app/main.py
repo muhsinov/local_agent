@@ -46,8 +46,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 app.state.chat_semaphore = asyncio.Semaphore(1)
             if not hasattr(app.state, "document_semaphore") or app.state.document_semaphore is None:
                 app.state.document_semaphore = asyncio.Semaphore(1)
-            if not hasattr(app.state, "vector_index_semaphore") or app.state.vector_index_semaphore is None:
-                app.state.vector_index_semaphore = asyncio.Semaphore(1)
+            if not hasattr(app.state, "vector_index_lock") or app.state.vector_index_lock is None:
+                app.state.vector_index_lock = asyncio.Lock()
             ensure_runtime_directories(active_settings)
             yield
         finally:
@@ -59,7 +59,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.ollama_client = None
     app.state.chat_semaphore = None
     app.state.document_semaphore = None
-    app.state.vector_index_semaphore = None
+    app.state.vector_index_lock = None
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[

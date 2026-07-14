@@ -1,4 +1,5 @@
 import sqlite3
+import json
 
 import pytest
 
@@ -56,3 +57,32 @@ def test_semantic_search_rejects_empty_index(tmp_path) -> None:
     with pytest.raises(RagError) as exc:
         semantic_search(settings, query="test", top_k=1, embedding_model=FakeEmbeddingModel())
     assert exc.value.code == "VECTOR_INDEX_EMPTY"
+
+
+def test_semantic_search_detects_manifest_dimension_mismatch(tmp_path) -> None:
+    settings = build_settings(tmp_path, EMBEDDING_DIMENSION=64)
+    initialize_database(settings)
+    _create_ready_document(settings, "first.txt", "agent xavfsizligi va himoya qoidalari")
+    rebuild_vector_index(settings, embedding_model=FakeEmbeddingModel())
+    with sqlite3.connect(settings.resolved_database_path) as connection:
+        generation_id = connection.execute("SELECT active_generation FROM vector_index_state WHERE id = 1;").fetchone()[0]
+    manifest_path = settings.resolved_vector_store_directory / "generations" / generation_id / "manifest.json"
+    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    data["embedding_dimension"] = 999
+    manifest_path.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(RagError) as exc:
+        semantic_search(settings, query="xavfsizlik", top_k=1, embedding_model=FakeEmbeddingModel())
+    assert exc.value.code == "VECTOR_INDEX_CORRUPT"
+
+
+def test_semantic_search_detects_db_chunk_count_mismatch(tmp_path) -> None:
+    settings = build_settings(tmp_path, EMBEDDING_DIMENSION=64)
+    initialize_database(settings)
+    _create_ready_document(settings, "first.txt", "agent xavfsizligi va himoya qoidalari")
+    rebuild_vector_index(settings, embedding_model=FakeEmbeddingModel())
+    with sqlite3.connect(settings.resolved_database_path) as connection:
+        connection.execute("DELETE FROM document_chunks;")
+        connection.commit()
+    with pytest.raises(RagError) as exc:
+        semantic_search(settings, query="xavfsizlik", top_k=1, embedding_model=FakeEmbeddingModel())
+    assert exc.value.code == "VECTOR_INDEX_CORRUPT"

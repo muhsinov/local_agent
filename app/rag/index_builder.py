@@ -1,4 +1,3 @@
-from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -10,13 +9,6 @@ from app.rag.chunker import chunk_text
 from app.rag.embedding_model import EmbeddingModel
 from app.rag.exceptions import RagError
 from app.rag.models import TextChunk
-
-
-@dataclass(frozen=True)
-class PreparedIndexBuild:
-    documents: list[DocumentRecord]
-    chunks: list[TextChunk]
-    vectors: np.ndarray
 
 
 def _read_document_text(settings: Settings, document: DocumentRecord) -> str:
@@ -48,9 +40,25 @@ def build_chunks_for_documents(settings: Settings, documents: list[DocumentRecor
     return chunks
 
 
-def build_embeddings(embedding_model: EmbeddingModel, chunks: list[TextChunk]) -> np.ndarray:
-    texts = [chunk.text for chunk in chunks]
-    return embedding_model.encode_documents(texts)
+def build_embeddings(
+    embedding_model: EmbeddingModel,
+    chunks: list[TextChunk],
+    batch_size: int,
+) -> np.ndarray:
+    if not chunks:
+        return np.empty((0, embedding_model.get_dimension()), dtype=np.float32)
+    dimension = embedding_model.get_dimension()
+    result = np.empty((len(chunks), dimension), dtype=np.float32)
+    cursor = 0
+    for start in range(0, len(chunks), batch_size):
+        chunk_batch = chunks[start : start + batch_size]
+        text_batch = [chunk.text for chunk in chunk_batch]
+        vectors = embedding_model.encode_documents(text_batch)
+        if vectors.shape != (len(chunk_batch), dimension):
+            raise RagError(500, "EMBEDDING_INVALID_RESPONSE", "Embedding batch natijasi noto'g'ri o'lchamda qaytdi.")
+        result[cursor : cursor + len(chunk_batch)] = vectors
+        cursor += len(chunk_batch)
+    return result
 
 
 def collect_indexable_documents(connection, settings: Settings) -> list[DocumentRecord]:

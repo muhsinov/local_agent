@@ -1,8 +1,9 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from contextlib import contextmanager
 
-from fastapi import FastAPI
 import numpy as np
+from fastapi import FastAPI
 
 from app.config import Settings
 from app.llm.exceptions import (
@@ -47,10 +48,7 @@ class FakeOllamaClient:
             for candidate in (model.name, model.model):
                 if candidate:
                     normalized_candidate = candidate.strip().lower()
-                    if (
-                        normalized_candidate == normalized_target
-                        or normalized_candidate.startswith(f"{normalized_target}-")
-                    ):
+                    if normalized_candidate == normalized_target or normalized_candidate.startswith(f"{normalized_target}-"):
                         return True
         return False
 
@@ -68,6 +66,22 @@ class FakeOllamaClient:
 class FakeEmbeddingModel:
     dimension: int = 64
     closed: bool = False
+    load_count: int = 0
+    unload_count: int = 0
+    max_batch_seen: int = 0
+    operation_depth: int = 0
+    batch_sizes: list[int] = field(default_factory=list)
+
+    def begin_operation(self) -> None:
+        if self.operation_depth == 0:
+            self.load_count += 1
+        self.operation_depth += 1
+
+    def end_operation(self) -> None:
+        if self.operation_depth > 0:
+            self.operation_depth -= 1
+        if self.operation_depth == 0:
+            self.unload_count += 1
 
     def _vectorize(self, texts: list[str]) -> np.ndarray:
         rows: list[list[float]] = []
@@ -88,17 +102,27 @@ class FakeEmbeddingModel:
 
     def encode_documents(self, texts: list[str]) -> np.ndarray:
         if not texts:
-            return np.empty((0, 4), dtype=np.float32)
+            return np.empty((0, self.dimension), dtype=np.float32)
+        self.batch_sizes.append(len(texts))
+        self.max_batch_seen = max(self.max_batch_seen, len(texts))
         return self._vectorize(texts)
 
     def encode_query(self, text: str) -> np.ndarray:
         return self._vectorize([text])
 
     def get_dimension(self) -> int:
-        return 4
+        return self.dimension
 
     def close(self) -> None:
         self.closed = True
+
+    @contextmanager
+    def session(self):
+        self.begin_operation()
+        try:
+            yield self
+        finally:
+            self.end_operation()
 
 
 def build_settings(tmp_path: Path, **overrides: object) -> Settings:

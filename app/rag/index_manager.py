@@ -55,18 +55,27 @@ def _index_path(directory: Path) -> Path:
 def _read_manifest(path: Path) -> VectorIndexManifest:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
+        return VectorIndexManifest(**data)
+    except OSError as exc:
+        raise RagError(500, "VECTOR_INDEX_STORAGE_ERROR", "Vector index manifestini o'qib bo'lmadi.") from exc
     except Exception as exc:
-        raise RagError(500, "VECTOR_INDEX_CORRUPT", "Vector index manifestini o'qib bo'lmadi.") from exc
-    return VectorIndexManifest(**data)
+        raise RagError(409, "VECTOR_INDEX_CORRUPT", "Vector index manifestini o'qib bo'lmadi.") from exc
 
 
 def _write_manifest(path: Path, manifest: VectorIndexManifest) -> None:
     payload = json.dumps(asdict(manifest), ensure_ascii=False, indent=2, sort_keys=True)
     part_path = path.with_suffix(".json.part")
     try:
-        part_path.write_text(payload, encoding="utf-8")
+        with open(part_path, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(part_path, path)
     except OSError as exc:
+        try:
+            part_path.unlink(missing_ok=True)
+        except OSError:
+            pass
         raise RagError(500, "VECTOR_INDEX_STORAGE_ERROR", "Vector index manifestini yozib bo'lmadi.") from exc
 
 
@@ -107,6 +116,13 @@ def _cleanup_directory(path: Path) -> None:
         shutil.rmtree(path, ignore_errors=True)
 
 
+def _cleanup_file(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        return
+
+
 def _prune_generations(settings: Settings, keep_generation: str | None) -> None:
     root = _generation_root(settings)
     if not root.exists():
@@ -126,17 +142,17 @@ def _prune_generations(settings: Settings, keep_generation: str | None) -> None:
 
 def _validate_ready_index(
     settings: Settings,
-    connection: sqlite3.Connection,
     state: VectorIndexStateSnapshot,
-) -> None:
-    if not state.active_generation:
-        raise RagError(409, "VECTOR_INDEX_CORRUPT", "Faol vector index generation topilmadi.")
+    *,
+    db_chunk_count: int,
+):
+    if state.status != "ready" or state.dirty or not state.active_generation:
+        raise RagError(409, "VECTOR_INDEX_CORRUPT", "Vector index tayyor holatda emas.")
     generation_dir = _generation_dir(settings, state.active_generation)
     if not generation_dir.exists():
         raise RagError(409, "VECTOR_INDEX_CORRUPT", "Faol vector index artifact topilmadi.")
     manifest = _read_manifest(_manifest_path(generation_dir))
     index = FaissStore().read(_index_path(generation_dir))
-    db_chunk_count = int(connection.execute("SELECT COUNT(*) FROM document_chunks;").fetchone()[0])
     if (
         manifest.generation_id != state.active_generation
         or manifest.embedding_model != state.embedding_model
@@ -146,8 +162,11 @@ def _validate_ready_index(
         or manifest.chunk_count != db_chunk_count
         or int(index.ntotal) != state.chunk_count
         or index.d != state.embedding_dimension
+        or manifest.metric != "cosine"
+        or manifest.faiss_index_type != "IndexIDMap2(IndexFlatIP)"
     ):
         raise RagError(409, "VECTOR_INDEX_CORRUPT", "Vector index holati va artifactlari bir-biriga mos emas.")
+    return manifest, index
 
 
 def reconcile_vector_index(settings: Settings) -> None:
@@ -161,7 +180,8 @@ def reconcile_vector_index(settings: Settings) -> None:
             state = _load_state(connection)
             if state.status == "ready":
                 try:
-                    _validate_ready_index(settings, connection, state)
+                    db_chunk_count = int(connection.execute("SELECT COUNT(*) FROM document_chunks;").fetchone()[0])
+                    _validate_ready_index(settings, state, db_chunk_count=db_chunk_count)
                 except RagError:
                     connection.execute(
                         """
@@ -193,6 +213,10 @@ def rebuild_vector_index(
     generation_id = _generation_id()
     build_dir = _building_dir(settings, generation_id)
     final_dir = _generation_dir(settings, generation_id)
+    index_part = build_dir / "index.faiss.part"
+    manifest_part = build_dir / "manifest.json.part"
+    generation_committed = False
+
     with connection_scope(settings) as connection:
         documents = collect_indexable_documents(connection, settings)
     if requested_document_id is not None and not any(document.id == requested_document_id for document in documents):
@@ -203,24 +227,27 @@ def rebuild_vector_index(
     chunks = build_chunks_for_documents(settings, documents)
     if not chunks:
         raise RagError(422, "NO_INDEXABLE_DOCUMENTS", "Indexlash uchun tayyor hujjatlar topilmadi.")
-    vectors = build_embeddings(active_model, chunks)
+
+    try:
+        with active_model.session():
+            vectors = build_embeddings(active_model, chunks, settings.embedding_batch_size)
+    except RagError:
+        raise
+    except Exception as exc:
+        raise RagError(500, "VECTOR_INDEX_BUILD_ERROR", "Embedding batchlarini hisoblash muvaffaqiyatsiz tugadi.") from exc
 
     store = FaissStore()
     new_state: VectorIndexStateSnapshot | None = None
-    old_active_generation: str | None = None
-
     try:
         with connection_scope(settings) as connection:
             connection.execute("BEGIN;")
             try:
-                old_active_generation = _load_state(connection).active_generation
                 clear_chunks(connection)
                 chunk_ids = replace_all_chunks(connection, chunks)
                 index = store.create(settings.embedding_dimension)
                 store.add(index, vectors, np.asarray(chunk_ids, dtype=np.int64))
 
                 build_dir.mkdir(parents=True, exist_ok=False)
-                index_part = build_dir / "index.faiss.part"
                 store.write(index, index_part)
                 _fsync_file(index_part)
                 os.replace(index_part, _index_path(build_dir))
@@ -239,6 +266,15 @@ def rebuild_vector_index(
                     created_at=datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
                 )
                 _write_manifest(_manifest_path(build_dir), manifest)
+                parsed_manifest = _read_manifest(_manifest_path(build_dir))
+                reloaded_index = store.read(_index_path(build_dir))
+                if (
+                    parsed_manifest.chunk_count != len(chunk_ids)
+                    or parsed_manifest.embedding_dimension != settings.embedding_dimension
+                    or int(reloaded_index.ntotal) != len(chunk_ids)
+                    or reloaded_index.d != settings.embedding_dimension
+                ):
+                    raise RagError(500, "VECTOR_INDEX_BUILD_ERROR", "Yangi vector index artifacti yaroqsiz holatda yaratildi.")
                 os.replace(build_dir, final_dir)
 
                 document_ids = {chunk.document_id for chunk in chunks}
@@ -271,21 +307,32 @@ def rebuild_vector_index(
                     ),
                 )
                 connection.commit()
+                generation_committed = True
                 new_state = _load_state(connection)
-            except Exception:
+            except RagError:
                 connection.rollback()
                 raise
+            except OSError as exc:
+                connection.rollback()
+                raise RagError(500, "VECTOR_INDEX_STORAGE_ERROR", "Vector index artifactlarini saqlab bo'lmadi.") from exc
+            except sqlite3.Error:
+                connection.rollback()
+                raise
+            except Exception as exc:
+                connection.rollback()
+                raise RagError(500, "VECTOR_INDEX_BUILD_ERROR", "Vector indexni yaratishda kutilmagan xatolik yuz berdi.") from exc
     except RagError:
-        _cleanup_directory(build_dir)
-        if final_dir.exists() and old_active_generation != generation_id:
-            _cleanup_directory(final_dir)
         raise
     except sqlite3.Error as exc:
-        _cleanup_directory(build_dir)
         raise RagError(500, "DATABASE_ERROR", "Vector indexni saqlash uchun database yangilanmadi.") from exc
     finally:
         if owned_model:
             active_model.close()
+        _cleanup_file(index_part)
+        _cleanup_file(manifest_part)
+        _cleanup_directory(build_dir)
+        if not generation_committed:
+            _cleanup_directory(final_dir)
 
     if new_state is None:
         raise RagError(500, "VECTOR_INDEX_STORAGE_ERROR", "Vector index holati aniqlanmadi.")
