@@ -1,13 +1,13 @@
 import sqlite3
 
 from app.config import Settings
-from app.database import get_connection
+from app.database import connection_scope
 
 
 def conversation_exists(settings: Settings, conversation_id: int) -> bool:
     """Check whether a conversation exists."""
 
-    with get_connection(settings) as connection:
+    with connection_scope(settings) as connection:
         row = connection.execute(
             "SELECT 1 FROM conversations WHERE id = ?;",
             (conversation_id,),
@@ -31,7 +31,7 @@ def get_recent_messages(settings: Settings, conversation_id: int, limit: int) ->
     if limit <= 0:
         return []
 
-    with get_connection(settings) as connection:
+    with connection_scope(settings) as connection:
         rows = connection.execute(
             """
             SELECT role, content
@@ -55,9 +55,9 @@ def save_exchange(
 ) -> int:
     """Persist a user/assistant exchange in a single transaction."""
 
-    with get_connection(settings) as connection:
-        connection.execute("BEGIN;")
+    with connection_scope(settings) as connection:
         try:
+            connection.execute("BEGIN;")
             active_conversation_id = conversation_id
             if active_conversation_id is None:
                 active_conversation_id = create_conversation(connection, _build_conversation_title(user_message))

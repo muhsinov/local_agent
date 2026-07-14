@@ -28,13 +28,29 @@ $targetModel = if (Test-Path $venvPython) {
 }
 
 try {
-    ollama list | Out-Null
+    $modelsOutput = & ollama list 2>&1
+    $listExitCode = $LASTEXITCODE
 } catch {
     throw "Ollama command mavjud, lekin server ishlamayapti. Avval Ollama ilovasini ishga tushiring."
 }
 
-$models = ollama list
-if ($models -match [Regex]::Escape($targetModel)) {
+if ($listExitCode -ne 0) {
+    throw "Ollama command mavjud, lekin server ishlamayapti. Avval Ollama ilovasini ishga tushiring."
+}
+
+$installedModels = @()
+foreach ($line in ($modelsOutput -split "`r?`n")) {
+    $trimmed = $line.Trim()
+    if (-not $trimmed -or $trimmed -match '^NAME\s+') {
+        continue
+    }
+    $parts = $trimmed -split '\s+'
+    if ($parts.Count -ge 1) {
+        $installedModels += $parts[0]
+    }
+}
+
+if ($installedModels -contains $targetModel) {
     Write-Host "$targetModel allaqachon mavjud."
     exit 0
 }
@@ -45,4 +61,7 @@ if ($confirmation -notin @("y", "Y", "yes", "YES")) {
     exit 0
 }
 
-ollama pull $targetModel
+& ollama pull $targetModel
+if ($LASTEXITCODE -ne 0) {
+    throw "$targetModel modelini yuklab bo'lmadi."
+}

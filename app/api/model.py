@@ -2,7 +2,12 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from app.api.errors import ApiError
-from app.llm.exceptions import OllamaInvalidResponseError, OllamaUnavailableError
+from app.llm.exceptions import (
+    OllamaInvalidResponseError,
+    OllamaModelNotFoundError,
+    OllamaTimeoutError,
+    OllamaUnavailableError,
+)
 from app.schemas.model import ModelStatusResponse
 
 
@@ -27,7 +32,19 @@ async def get_model_status(request: Request) -> ModelStatusResponse:
                 installed=False,
             ).model_dump(),
         )
+    except OllamaTimeoutError:
+        raise ApiError(
+            status_code=504,
+            code="OLLAMA_TIMEOUT",
+            message="Ollama javobi kutish vaqtidan oshdi.",
+        ) from None
     except OllamaInvalidResponseError:
+        raise ApiError(
+            status_code=502,
+            code="OLLAMA_INVALID_RESPONSE",
+            message="Ollama noto'g'ri javob qaytardi.",
+        ) from None
+    except OllamaModelNotFoundError:
         raise ApiError(
             status_code=502,
             code="OLLAMA_INVALID_RESPONSE",

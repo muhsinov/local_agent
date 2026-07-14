@@ -31,14 +31,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI):
         app.state.settings = active_settings
         created_client = False
-        if not hasattr(app.state, "ollama_client") or app.state.ollama_client is None:
-            app.state.ollama_client = OllamaClient(active_settings)
-            created_client = True
-        app.state.chat_semaphore = asyncio.Semaphore(1)
-        ensure_runtime_directories(active_settings)
-        yield
-        if created_client:
-            await app.state.ollama_client.close()
+        try:
+            if not hasattr(app.state, "ollama_client") or app.state.ollama_client is None:
+                app.state.ollama_client = OllamaClient(active_settings)
+                created_client = True
+            if not hasattr(app.state, "chat_semaphore") or app.state.chat_semaphore is None:
+                app.state.chat_semaphore = asyncio.Semaphore(1)
+            ensure_runtime_directories(active_settings)
+            yield
+        finally:
+            if created_client:
+                await app.state.ollama_client.close()
 
     app = FastAPI(title=active_settings.app_name, version=active_settings.app_version, lifespan=lifespan)
     app.state.settings = active_settings

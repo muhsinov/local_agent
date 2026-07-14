@@ -1,5 +1,5 @@
 import sqlite3
-from contextlib import closing
+from contextlib import closing, contextmanager
 from pathlib import Path
 
 from app.config import Settings, get_settings
@@ -53,6 +53,17 @@ def get_connection(settings: Settings | None = None) -> sqlite3.Connection:
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON;")
     return connection
+
+
+@contextmanager
+def connection_scope(settings: Settings | None = None):
+    """Yield a sqlite connection and always close it afterwards."""
+
+    connection = get_connection(settings)
+    try:
+        yield connection
+    finally:
+        connection.close()
 
 
 def get_schema_version(connection: sqlite3.Connection) -> int:

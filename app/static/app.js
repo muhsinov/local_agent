@@ -22,7 +22,14 @@ async function loadHealthStatus() {
 async function loadModelStatus() {
   try {
     const response = await fetch("/model/status");
-    const payload = await response.json();
+    let payload = null;
+    try {
+      payload = await response.json();
+    } catch (error) {
+      modelStatus.textContent = "backend error";
+      chatStatus.textContent = "Model status javobi noto‘g‘ri formatda keldi.";
+      return;
+    }
 
     if (response.ok && payload.installed) {
       modelStatus.textContent = `${payload.model} ready`;
@@ -30,13 +37,20 @@ async function loadModelStatus() {
       return;
     }
 
-    if (payload.ollama === "unreachable") {
+    if (!response.ok) {
+      modelStatus.textContent = "backend error";
+      chatStatus.textContent = payload?.detail?.message || "Model statusni yuklab bo‘lmadi.";
+      return;
+    }
+
+    if (payload && payload.ollama === "unreachable") {
       modelStatus.textContent = "Ollama unreachable";
       chatStatus.textContent = "Ollama server ishlamayapti yoki ulanib bo‘lmadi.";
       return;
     }
 
-    modelStatus.textContent = `${payload.model} missing`;
+    const modelName = payload?.model || "configured model";
+    modelStatus.textContent = `${modelName} missing`;
     chatStatus.textContent = "Model o‘rnatilmagan. scripts/prepare_ollama.ps1 orqali tayyorlang.";
   } catch (error) {
     modelStatus.textContent = "status error";
@@ -81,7 +95,13 @@ async function submitChat() {
         conversation_id: conversationId,
       }),
     });
-    const payload = await response.json();
+    let payload = null;
+    try {
+      payload = await response.json();
+    } catch (error) {
+      appendMessage("Backend noto‘g‘ri javob qaytardi.", "system");
+      return;
+    }
 
     if (!response.ok) {
       const detail = payload?.detail?.message || "Noma’lum xatolik yuz berdi.";

@@ -48,7 +48,12 @@ class OllamaChatResult:
 class OllamaClient:
     """Small async client for the local Ollama HTTP API."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        transport: httpx.AsyncBaseTransport | None = None,
+        async_client: httpx.AsyncClient | None = None,
+    ) -> None:
         base_url = settings.ollama_base_url.rstrip("/")
         timeout = httpx.Timeout(
             connect=min(5.0, float(settings.request_timeout_seconds)),
@@ -57,7 +62,12 @@ class OllamaClient:
             pool=min(5.0, float(settings.request_timeout_seconds)),
         )
         self._settings = settings
-        self._client = httpx.AsyncClient(base_url=base_url, timeout=timeout)
+        if async_client is not None:
+            self._client = async_client
+            self._owns_client = False
+        else:
+            self._client = httpx.AsyncClient(base_url=base_url, timeout=timeout, transport=transport)
+            self._owns_client = True
 
     async def get_models(self) -> list[OllamaModel]:
         """Return the models exposed by the local Ollama server."""
@@ -96,6 +106,7 @@ class OllamaClient:
         payload = await self._request_json(
             "POST",
             "/api/chat",
+            model_not_found_on_404=True,
             json={
                 "model": self._settings.ollama_model,
                 "messages": messages,
@@ -128,9 +139,17 @@ class OllamaClient:
     async def close(self) -> None:
         """Close the underlying HTTP client."""
 
-        await self._client.aclose()
+        if self._owns_client:
+            await self._client.aclose()
 
-    async def _request_json(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+    async def _request_json(
+        self,
+        method: str,
+        path: str,
+        *,
+        model_not_found_on_404: bool = False,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
         try:
             response = await self._client.request(method, path, **kwargs)
         except httpx.TimeoutException as exc:
@@ -139,7 +158,9 @@ class OllamaClient:
             raise OllamaUnavailableError("Ollama serveriga ulanib bo'lmadi.") from exc
 
         if response.status_code == 404:
-            raise OllamaModelNotFoundError("So'ralgan Ollama modeli topilmadi.")
+            if model_not_found_on_404 and self._is_model_not_found_response(response):
+                raise OllamaModelNotFoundError("So'ralgan Ollama modeli topilmadi.")
+            raise OllamaUnavailableError("Ollama serveri so'rovni bajara olmadi.")
         if response.status_code >= 400:
             raise OllamaUnavailableError("Ollama serveri so'rovni bajara olmadi.")
 
@@ -158,6 +179,8 @@ class OllamaClient:
             return None
         if isinstance(value, bool) or not isinstance(value, int):
             raise OllamaInvalidResponseError("Ollama usage qiymatlari noto'g'ri formatda qaytdi.")
+        if value < 0:
+            raise OllamaInvalidResponseError("Ollama usage qiymatlari manfiy bo'lishi mumkin emas.")
         return value
 
     @staticmethod
@@ -165,3 +188,14 @@ class OllamaClient:
         normalized_candidate = candidate.strip().lower()
         normalized_target = target.strip().lower()
         return normalized_candidate == normalized_target or normalized_candidate.startswith(f"{normalized_target}-")
+
+    @staticmethod
+    def _is_model_not_found_response(response: httpx.Response) -> bool:
+        try:
+            payload = response.json()
+        except ValueError:
+            return False
+        if not isinstance(payload, dict):
+            return False
+        error = payload.get("error")
+        return isinstance(error, str) and "model" in error.lower() and "not found" in error.lower()

@@ -1,4 +1,5 @@
 import asyncio
+import sqlite3
 from time import perf_counter
 
 from fastapi import APIRouter, Request
@@ -34,12 +35,21 @@ async def chat(request: Request, payload: ChatRequest) -> ChatResponse:
             message=f"Xabar uzunligi {settings.max_chat_message_chars} belgidan oshmasligi kerak.",
         )
 
-    if payload.conversation_id is not None and not conversation_exists(settings, payload.conversation_id):
+    try:
+        if payload.conversation_id is not None and not conversation_exists(settings, payload.conversation_id):
+            raise ApiError(
+                status_code=404,
+                code="CONVERSATION_NOT_FOUND",
+                message="Conversation topilmadi.",
+            )
+    except ApiError:
+        raise
+    except (sqlite3.Error, RuntimeError):
         raise ApiError(
-            status_code=404,
-            code="CONVERSATION_NOT_FOUND",
-            message="Conversation topilmadi.",
-        )
+            status_code=500,
+            code="DATABASE_ERROR",
+            message="Lokal database operatsiyasini bajarib bo'lmadi.",
+        ) from None
 
     semaphore = request.app.state.chat_semaphore
     acquired = False
@@ -100,6 +110,12 @@ async def chat(request: Request, payload: ChatRequest) -> ChatResponse:
             status_code=502,
             code="OLLAMA_INVALID_RESPONSE",
             message="Ollama noto'g'ri javob qaytardi.",
+        ) from None
+    except (sqlite3.Error, RuntimeError):
+        raise ApiError(
+            status_code=500,
+            code="DATABASE_ERROR",
+            message="Lokal database operatsiyasini bajarib bo'lmadi.",
         ) from None
     finally:
         if acquired:

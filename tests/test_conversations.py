@@ -1,7 +1,9 @@
 import sqlite3
+from contextlib import contextmanager
 
 from fastapi.testclient import TestClient
 
+from app.services import conversation_service
 from app.services.conversation_service import conversation_exists, get_recent_messages, save_exchange
 from tests.conftest import FakeOllamaClient, build_test_app, build_settings
 
@@ -67,3 +69,31 @@ def test_get_recent_messages_respects_limit(tmp_path) -> None:
         {"role": "user", "content": "3"},
         {"role": "assistant", "content": "c"},
     ]
+
+
+def test_conversation_functions_close_connections(monkeypatch, tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    app, _ = build_test_app(tmp_path, FakeOllamaClient())
+
+    with TestClient(app):
+        conversation_id = save_exchange(settings, None, "Savol", "Javob")
+
+    state = {"closed": 0}
+
+    @contextmanager
+    def fake_connection_scope(_: object):
+        connection = sqlite3.connect(settings.resolved_database_path)
+        connection.row_factory = sqlite3.Row
+        try:
+            yield connection
+        finally:
+            connection.close()
+            state["closed"] += 1
+
+    monkeypatch.setattr(conversation_service, "connection_scope", fake_connection_scope)
+
+    assert conversation_exists(settings, conversation_id) is True
+    get_recent_messages(settings, conversation_id, 2)
+    save_exchange(settings, conversation_id, "Yana savol", "Yana javob")
+
+    assert state["closed"] == 3

@@ -1,8 +1,13 @@
+import asyncio
 import sqlite3
 
+import pytest
 from fastapi.testclient import TestClient
 
+import app.api.chat as chat_api
+import app.main as app_main
 from app.llm.ollama_client import OllamaChatResult, OllamaUsage
+from app.main import create_app
 from app.services.conversation_service import save_exchange
 from tests.conftest import (
     FakeOllamaClient,
@@ -237,3 +242,104 @@ def test_chat_uses_temporary_database_only(tmp_path) -> None:
     assert response.status_code == 200
     assert settings.resolved_database_path.exists()
     assert str(settings.resolved_database_path).startswith(str(tmp_path))
+
+
+def test_chat_maps_database_error_from_lookup(monkeypatch, tmp_path) -> None:
+    app, _ = build_test_app(tmp_path, FakeOllamaClient())
+
+    def broken_exists(*args, **kwargs):
+        raise sqlite3.OperationalError("db down")
+
+    monkeypatch.setattr(chat_api, "conversation_exists", broken_exists)
+
+    with TestClient(app) as client:
+        response = client.post("/chat", json={"message": "Salom", "conversation_id": 1})
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "detail": {
+            "code": "DATABASE_ERROR",
+            "message": "Lokal database operatsiyasini bajarib bo'lmadi.",
+        }
+    }
+
+
+def test_chat_maps_database_error_from_save(monkeypatch, tmp_path) -> None:
+    app, _ = build_test_app(tmp_path, FakeOllamaClient())
+
+    def broken_save(*args, **kwargs):
+        raise sqlite3.OperationalError("db down")
+
+    monkeypatch.setattr(chat_api, "save_exchange", broken_save)
+
+    with TestClient(app) as client:
+        response = client.post("/chat", json={"message": "Salom"})
+
+    assert response.status_code == 500
+    assert response.json()["detail"]["code"] == "DATABASE_ERROR"
+
+
+def test_chat_returns_agent_busy_when_semaphore_times_out(tmp_path) -> None:
+    class BlockingSemaphore:
+        async def acquire(self):
+            await asyncio.sleep(0.05)
+
+        def release(self):
+            pass
+
+    app, _ = build_test_app(tmp_path, FakeOllamaClient(), CHAT_BUSY_TIMEOUT_SECONDS=1)
+    app.state.chat_semaphore = BlockingSemaphore()
+    app.state.settings.chat_busy_timeout_seconds = 0.001
+
+    with TestClient(app) as client:
+        response = client.post("/chat", json={"message": "Salom"})
+
+    assert response.status_code == 429
+    assert response.json() == {
+        "detail": {
+            "code": "AGENT_BUSY",
+            "message": "Agent hozir band. Bir ozdan keyin qayta urinib ko'ring.",
+        }
+    }
+
+
+def test_chat_releases_semaphore_after_exception(tmp_path) -> None:
+    app, _ = build_test_app(tmp_path, FakeOllamaClient(chat_error=OllamaTimeoutError("slow")))
+
+    with TestClient(app) as client:
+        first = client.post("/chat", json={"message": "Salom"})
+        second = client.post("/chat", json={"message": "Yana salom"})
+
+    assert first.status_code == 504
+    assert second.status_code == 504
+
+
+def test_lifespan_closes_created_ollama_client_on_startup_failure(monkeypatch, tmp_path) -> None:
+    fake_client = FakeOllamaClient()
+    settings = build_test_app(tmp_path, FakeOllamaClient())[1]
+
+    def fake_factory(settings):
+        return fake_client
+
+    def fail_init(settings):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(app_main, "OllamaClient", fake_factory)
+    monkeypatch.setattr(app_main, "initialize_database", fail_init)
+
+    app = create_app(settings)
+    with pytest.raises(RuntimeError):
+        with TestClient(app):
+            pass
+
+    assert fake_client.closed is True
+
+
+def test_lifespan_does_not_close_injected_ollama_client(tmp_path) -> None:
+    fake_client = FakeOllamaClient()
+    app, _ = build_test_app(tmp_path, fake_client)
+
+    with TestClient(app):
+        pass
+
+    assert fake_client.closed is False
