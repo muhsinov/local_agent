@@ -68,17 +68,6 @@ def _default_memory_reader(pid: int) -> int | None:
         return None
 
 
-def _terminate_process(process: multiprocessing.process.BaseProcess, timeout: float = 5.0) -> None:
-    """Terminate and join a child process without raising further errors."""
-
-    if process.is_alive():
-        process.terminate()
-    process.join(timeout)
-    if process.is_alive():
-        process.kill()
-        process.join(timeout)
-
-
 def _safe_processing_error() -> ApiError:
     return ApiError(500, "DOCUMENT_PROCESSING_ERROR", _PROCESSING_MESSAGE)
 
@@ -150,30 +139,50 @@ class ExtractionSupervisor:
         context = multiprocessing.get_context("spawn")
         parent_connection, child_connection = context.Pipe(duplex=False)
         process_builder = process_factory or context.Process
-        process = process_builder(
+        self.parent_connection = parent_connection
+        self.child_connection = child_connection
+        self.process = process_builder(
             target=_worker_main,
             args=(child_connection, str(file_path), file_type, settings.model_dump()),
         )
-        self.parent_connection = parent_connection
-        self.child_connection = child_connection
-        self.process = process
         self.memory_reader = memory_reader or _default_memory_reader
         self.deadline = time.monotonic() + settings.document_extraction_timeout_seconds
         self.memory_limit_bytes = settings.document_extraction_memory_mb * 1024 * 1024
         self._started = False
+        self._finished = False
+        self._closed = False
+        self._terminated = False
 
     def start(self) -> None:
+        if self._started:
+            return
         self.process.start()
         self._started = True
         self.child_connection.close()
 
-    def _poll_payload(self) -> tuple[bool, Any | None]:
+    def is_alive(self) -> bool:
+        if not self._started or self._finished:
+            return False
+        return self.process.is_alive()
+
+    def _join_bounded(self, timeout: float = 5.0) -> None:
+        if not self._started or self._finished:
+            return
+        self.process.join(timeout)
+        if not self.process.is_alive():
+            self._finished = True
+
+    def _recv_payload(self) -> Any:
         try:
-            if self.parent_connection.poll(0):
-                return True, self.parent_connection.recv()
-        except (BrokenPipeError, EOFError, OSError):
-            return False, None
-        return False, None
+            return self.parent_connection.recv()
+        except (EOFError, BrokenPipeError, OSError, ValueError):
+            raise _safe_processing_error() from None
+
+    def _poll_payload_ready(self) -> bool:
+        try:
+            return bool(self.parent_connection.poll(0))
+        except (EOFError, BrokenPipeError, OSError):
+            return False
 
     def _check_limits(self) -> None:
         if time.monotonic() >= self.deadline:
@@ -186,28 +195,36 @@ class ExtractionSupervisor:
                 raise ApiError(500, "DOCUMENT_EXTRACTION_MEMORY_LIMIT", _MEMORY_MESSAGE)
 
     def step(self) -> ExtractedDocument | None:
-        has_payload, payload = self._poll_payload()
-        if has_payload:
-            self.join()
+        if self._poll_payload_ready():
+            payload = self._recv_payload()
+            self._join_bounded()
             return _parse_worker_payload(payload)
-        if not self.process.is_alive():
-            self.join()
-            has_payload, payload = self._poll_payload()
-            if has_payload:
+        if not self.is_alive():
+            self._join_bounded()
+            if self._poll_payload_ready():
+                payload = self._recv_payload()
                 return _parse_worker_payload(payload)
             raise _safe_processing_error()
         self._check_limits()
         return None
 
-    def join(self) -> None:
-        if self._started:
-            self.process.join(5)
-
-    def terminate(self) -> None:
-        if self._started:
-            _terminate_process(self.process)
+    def terminate(self, timeout: float = 5.0) -> None:
+        if not self._started or self._terminated:
+            return
+        self._terminated = True
+        if self.process.is_alive():
+            self.process.terminate()
+        self.process.join(timeout)
+        if self.process.is_alive():
+            self.process.kill()
+            self.process.join(timeout)
+        if not self.process.is_alive():
+            self._finished = True
 
     def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
         try:
             self.parent_connection.close()
         finally:
@@ -215,6 +232,21 @@ class ExtractionSupervisor:
                 self.child_connection.close()
             except OSError:
                 return
+
+    async def start_async(self) -> None:
+        await asyncio.to_thread(self.start)
+
+    async def is_alive_async(self) -> bool:
+        return await asyncio.to_thread(self.is_alive)
+
+    async def step_async(self) -> ExtractedDocument | None:
+        return await asyncio.to_thread(self.step)
+
+    async def terminate_async(self) -> None:
+        await asyncio.to_thread(self.terminate)
+
+    async def close_async(self) -> None:
+        await asyncio.to_thread(self.close)
 
 
 def extract_document_isolated(
@@ -244,7 +276,7 @@ def extract_document_isolated(
             if poll_interval_seconds > 0:
                 time.sleep(poll_interval_seconds)
     finally:
-        if supervisor.process.is_alive():
+        if supervisor.is_alive():
             supervisor.terminate()
         supervisor.close()
 
@@ -270,16 +302,16 @@ async def extract_document_isolated_async(
     )
     sleeper = sleep or asyncio.sleep
     try:
-        supervisor.start()
+        await supervisor.start_async()
         while True:
-            result = supervisor.step()
+            result = await supervisor.step_async()
             if result is not None:
                 return result
             await sleeper(poll_interval_seconds)
     except asyncio.CancelledError:
-        supervisor.terminate()
+        await asyncio.shield(supervisor.terminate_async())
         raise
     finally:
-        if supervisor.process.is_alive():
-            supervisor.terminate()
-        supervisor.close()
+        if await supervisor.is_alive_async():
+            await asyncio.shield(supervisor.terminate_async())
+        await asyncio.shield(supervisor.close_async())

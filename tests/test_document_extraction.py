@@ -1,4 +1,6 @@
 import asyncio
+import threading
+import time
 import zipfile
 from pathlib import Path
 
@@ -142,6 +144,76 @@ class PayloadProcess:
 def payload_process_factory(payload=None, close_without_payload=False):
     def _factory(*, target, args):
         return PayloadProcess(target=target, args=args, payload=payload, close_without_payload=close_without_payload)
+
+    return _factory
+
+
+class SlowLifecycleProcess:
+    instances: list["SlowLifecycleProcess"] = []
+
+    def __init__(
+        self,
+        *,
+        target,
+        args,
+        start_gate: threading.Event | None = None,
+        release_gate: threading.Event | None = None,
+        payload=None,
+        delay_on_join: bool = False,
+        delay_on_terminate: bool = False,
+    ):
+        self._connection = args[0]
+        self._start_gate = start_gate
+        self._release_gate = release_gate
+        self._payload = payload
+        self._delay_on_join = delay_on_join
+        self._delay_on_terminate = delay_on_terminate
+        self._alive = False
+        self.pid = 4545
+        self.exitcode = None
+        self.terminated = False
+        self.killed = False
+        self.joined = False
+        self.closed = False
+        SlowLifecycleProcess.instances.append(self)
+
+    def start(self):
+        if self._start_gate is not None:
+            self._start_gate.set()
+            if self._release_gate is not None:
+                self._release_gate.wait(timeout=1)
+        self._alive = True
+        if self._payload is not None:
+            self._connection.send(self._payload)
+            self._alive = False
+            self.exitcode = 0
+
+    def is_alive(self):
+        return self._alive
+
+    def join(self, timeout=None):
+        self.joined = True
+        if self._delay_on_join and self._release_gate is not None:
+            self._release_gate.wait(timeout=1)
+        if not self._alive:
+            self.exitcode = 0 if self.exitcode is None else self.exitcode
+
+    def terminate(self):
+        self.terminated = True
+        if self._delay_on_terminate and self._release_gate is not None:
+            self._release_gate.wait(timeout=1)
+        self._alive = False
+        self.exitcode = -15
+
+    def kill(self):
+        self.killed = True
+        self._alive = False
+        self.exitcode = -9
+
+
+def slow_lifecycle_factory(**kwargs):
+    def _factory(*, target, args):
+        return SlowLifecycleProcess(target=target, args=args, **kwargs)
 
     return _factory
 
@@ -405,3 +477,237 @@ def test_extract_document_isolated_async_cancellation_terminates_process(tmp_pat
     asyncio.run(run_test())
     assert HangingProcess.instances
     assert HangingProcess.instances[-1].terminated is True
+
+
+def test_extract_document_isolated_async_start_does_not_block_event_loop(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    path = tmp_path / "sample.txt"
+    path.write_text("hello", encoding="utf-8")
+    started = threading.Event()
+    release = threading.Event()
+    beats: list[int] = []
+
+    async def heartbeat():
+        for index in range(3):
+            beats.append(index)
+            await asyncio.sleep(0)
+
+    async def run_test() -> None:
+        task = asyncio.create_task(
+            extract_document_isolated_async(
+                path,
+                "txt",
+                settings,
+                process_factory=slow_lifecycle_factory(start_gate=started, release_gate=release),
+                poll_interval_seconds=0.01,
+            )
+        )
+        await heartbeat()
+        assert started.wait(timeout=1)
+        release.set()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run_test())
+    assert len(beats) == 3
+
+
+def test_extract_document_isolated_async_join_does_not_block_event_loop(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    path = tmp_path / "sample.txt"
+    path.write_text("hello", encoding="utf-8")
+    release = threading.Event()
+    payload = {"ok": True, "result": {"text": "hello", "char_count": 5, "status": "ready", "page_count": None, "warning_code": None}}
+    beats: list[int] = []
+
+    async def run_test() -> None:
+        extraction_task = asyncio.create_task(
+            extract_document_isolated_async(
+                path,
+                "txt",
+                settings,
+                process_factory=slow_lifecycle_factory(payload=payload, release_gate=release, delay_on_join=True),
+                poll_interval_seconds=0.01,
+            )
+        )
+
+        async def heartbeat():
+            for index in range(3):
+                beats.append(index)
+                if index == 1:
+                    release.set()
+                await asyncio.sleep(0)
+
+        await heartbeat()
+        extracted = await extraction_task
+        assert extracted.text == "hello"
+
+    asyncio.run(run_test())
+    assert len(beats) >= 2
+    assert SlowLifecycleProcess.instances[-1].joined is True
+
+
+def test_extract_document_isolated_async_terminate_does_not_block_event_loop(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    path = tmp_path / "sample.txt"
+    path.write_text("hello", encoding="utf-8")
+    release = threading.Event()
+    beats: list[int] = []
+
+    async def run_test() -> None:
+        task = asyncio.create_task(
+            extract_document_isolated_async(
+                path,
+                "txt",
+                settings,
+                process_factory=slow_lifecycle_factory(release_gate=release, delay_on_terminate=True),
+                poll_interval_seconds=0.0,
+            )
+        )
+        await asyncio.sleep(0)
+
+        async def heartbeat():
+            for index in range(3):
+                beats.append(index)
+                await asyncio.sleep(0)
+
+        heartbeat_task = asyncio.create_task(heartbeat())
+        task.cancel()
+        await heartbeat_task
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run_test())
+    assert len(beats) == 3
+
+
+def test_extract_document_isolated_async_recv_does_not_block_event_loop(monkeypatch, tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    path = tmp_path / "sample.txt"
+    path.write_text("hello", encoding="utf-8")
+    payload = {"ok": True, "result": {"text": "hello", "char_count": 5, "status": "ready", "page_count": None, "warning_code": None}}
+    beats: list[int] = []
+    from app.documents.isolated_extraction import ExtractionSupervisor
+
+    original_recv = ExtractionSupervisor._recv_payload
+
+    def slow_recv(self):
+        time.sleep(0.05)
+        return original_recv(self)
+
+    monkeypatch.setattr(ExtractionSupervisor, "_recv_payload", slow_recv)
+
+    async def run_test() -> None:
+        extraction_task = asyncio.create_task(
+            extract_document_isolated_async(
+                path,
+                "txt",
+                settings,
+                process_factory=payload_process_factory(payload),
+                poll_interval_seconds=0.01,
+            )
+        )
+
+        async def heartbeat():
+            for index in range(3):
+                beats.append(index)
+                await asyncio.sleep(0)
+
+        await heartbeat()
+        extracted = await extraction_task
+        assert extracted.text == "hello"
+
+    asyncio.run(run_test())
+    assert beats
+
+
+def test_extract_document_isolated_async_memory_reader_does_not_block_event_loop(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path, DOCUMENT_EXTRACTION_MEMORY_MB=2048)
+    path = tmp_path / "sample.txt"
+    path.write_text("hello", encoding="utf-8")
+    beats: list[int] = []
+
+    def slow_reader(pid):
+        time.sleep(0.05)
+        return 0
+
+    async def run_test() -> None:
+        task = asyncio.create_task(
+            extract_document_isolated_async(
+                path,
+                "txt",
+                settings,
+                process_factory=HangingProcess,
+                memory_reader=slow_reader,
+                poll_interval_seconds=0.0,
+            )
+        )
+        for index in range(3):
+            beats.append(index)
+            await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run_test())
+    assert len(beats) == 3
+
+
+def test_terminate_is_idempotent(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    path = tmp_path / "sample.txt"
+    path.write_text("hello", encoding="utf-8")
+    from app.documents.isolated_extraction import ExtractionSupervisor
+
+    supervisor = ExtractionSupervisor(path, "txt", settings, process_factory=HangingProcess)
+    supervisor.start()
+    supervisor.terminate()
+    supervisor.terminate()
+    assert supervisor._terminated is True
+
+
+def test_close_is_idempotent(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    path = tmp_path / "sample.txt"
+    path.write_text("hello", encoding="utf-8")
+    from app.documents.isolated_extraction import ExtractionSupervisor
+
+    supervisor = ExtractionSupervisor(path, "txt", settings, process_factory=InlineProcess)
+    supervisor.close()
+    supervisor.close()
+    assert supervisor._closed is True
+
+
+def test_success_payload_joins_process(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    path = tmp_path / "sample.txt"
+    path.write_text("hello", encoding="utf-8")
+    payload = {"ok": True, "result": {"text": "hello", "char_count": 5, "status": "ready", "page_count": None, "warning_code": None}}
+    SlowLifecycleProcess.instances.clear()
+    extracted = extract_document_isolated(
+        path,
+        "txt",
+        settings,
+        process_factory=slow_lifecycle_factory(payload=payload),
+        poll_interval_seconds=0.0,
+    )
+    assert extracted.text == "hello"
+    assert SlowLifecycleProcess.instances[-1].joined is True
+
+
+def test_malformed_payload_cleans_up_child(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    path = tmp_path / "sample.txt"
+    path.write_text("hello", encoding="utf-8")
+    SlowLifecycleProcess.instances.clear()
+    with pytest.raises(ApiError):
+        extract_document_isolated(
+            path,
+            "txt",
+            settings,
+            process_factory=slow_lifecycle_factory(payload={"ok": True, "result": {"text": "hello"}}),
+            poll_interval_seconds=0.0,
+        )
+    assert SlowLifecycleProcess.instances[-1].joined is True
