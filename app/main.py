@@ -15,17 +15,16 @@ from app.api.health import router as health_router
 from app.api.model import router as model_router
 from app.config import PROJECT_ROOT, Settings, get_settings
 from app.database import initialize_database
-from app.documents.storage import cleanup_stale_quarantine_files
 from app.llm.ollama_client import OllamaClient
+from app.services.document_recovery_service import reconcile_document_quarantine
 
 
 def ensure_runtime_directories(settings: Settings) -> None:
     settings.resolved_upload_directory.mkdir(parents=True, exist_ok=True)
     settings.resolved_extracted_text_directory.mkdir(parents=True, exist_ok=True)
     settings.resolved_vector_store_directory.mkdir(parents=True, exist_ok=True)
-    cleanup_stale_quarantine_files(settings.resolved_upload_directory)
-    cleanup_stale_quarantine_files(settings.resolved_extracted_text_directory)
     initialize_database(settings)
+    reconcile_document_quarantine(settings)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:

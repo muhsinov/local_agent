@@ -1,14 +1,21 @@
+import asyncio
 import builtins
+import io
 import sqlite3
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
 from docx import Document
 from fastapi.testclient import TestClient
 from pypdf import PdfWriter
+from starlette.datastructures import UploadFile
 
 import app.api.documents as document_api
 import app.documents.storage as document_storage
+from app.api.documents import upload_document
 from tests.conftest import FakeOllamaClient, build_test_app
 
 
@@ -119,6 +126,35 @@ def test_duplicate_upload_returns_existing_document_id(tmp_path) -> None:
     assert second.json()["detail"]["existing_document_id"] == first.json()["id"]
 
 
+def test_signature_validation_runs_in_thread(monkeypatch, tmp_path) -> None:
+    app, _ = build_test_app(tmp_path, FakeOllamaClient())
+    called = {"value": False}
+    original_to_thread = document_api.asyncio.to_thread
+
+    async def tracking_to_thread(func, *args, **kwargs):
+        called["value"] = True
+        return await original_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(document_api.asyncio, "to_thread", tracking_to_thread)
+    with TestClient(app) as client:
+        response = client.post("/documents/upload", files={"file": ("sample.txt", b"hello", "text/plain")})
+    assert response.status_code == 201
+    assert called["value"] is True
+
+
+def test_pdf_signature_validation_uses_bounded_read(monkeypatch, tmp_path) -> None:
+    app, _ = build_test_app(tmp_path, FakeOllamaClient())
+    pdf_bytes = build_pdf_bytes()
+
+    def fail_read_bytes(self):
+        raise AssertionError("read_bytes should not be used for PDF header validation")
+
+    monkeypatch.setattr(Path, "read_bytes", fail_read_bytes)
+    with TestClient(app) as client:
+        response = client.post("/documents/upload", files={"file": ("sample.pdf", pdf_bytes, "application/pdf")})
+    assert response.status_code == 201
+
+
 def test_upload_cleanup_on_raw_write_error(monkeypatch, tmp_path) -> None:
     app, settings = build_test_app(tmp_path, FakeOllamaClient())
     original_open = builtins.open
@@ -156,10 +192,10 @@ def test_upload_cleanup_on_raw_rename_error(monkeypatch, tmp_path) -> None:
 def test_upload_cleanup_on_extraction_exception(monkeypatch, tmp_path) -> None:
     app, _ = build_test_app(tmp_path, FakeOllamaClient())
 
-    def broken_extract(*args, **kwargs):
+    async def broken_extract(*args, **kwargs):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(document_api, "extract_document_isolated", broken_extract)
+    monkeypatch.setattr(document_api, "extract_document_isolated_async", broken_extract)
     with TestClient(app, raise_server_exceptions=False) as client:
         response = client.post("/documents/upload", files={"file": ("sample.txt", b"hello", "text/plain")})
     assert response.status_code == 500
@@ -214,6 +250,20 @@ def test_upload_cleanup_on_database_insert_error(monkeypatch, tmp_path) -> None:
     assert_clean_storage(tmp_path)
 
 
+def test_upload_cleanup_on_document_record_parse_failure(monkeypatch, tmp_path) -> None:
+    app, _ = build_test_app(tmp_path, FakeOllamaClient())
+
+    def broken_create(*args, **kwargs):
+        raise ValueError("bad row")
+
+    monkeypatch.setattr(document_api, "create_document", broken_create)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post("/documents/upload", files={"file": ("sample.txt", b"hello", "text/plain")})
+    assert response.status_code == 500
+    assert response.json()["detail"]["code"] == "DATABASE_ERROR"
+    assert_clean_storage(tmp_path)
+
+
 def test_duplicate_race_returns_409_and_cleans_loser_files(tmp_path) -> None:
     app, settings = build_test_app(tmp_path, FakeOllamaClient())
     payload = {"file": ("dup.txt", b"same text", "text/plain")}
@@ -233,3 +283,68 @@ def test_duplicate_race_returns_409_and_cleans_loser_files(tmp_path) -> None:
     assert count == 1
     assert len(list(settings.resolved_upload_directory.glob("*"))) == 1
     assert len(list(settings.resolved_extracted_text_directory.glob("*"))) == 1
+
+
+def test_upload_cancellation_cleans_artifacts_and_releases_semaphore(monkeypatch, tmp_path) -> None:
+    app, settings = build_test_app(tmp_path, FakeOllamaClient())
+    with TestClient(app):
+        pass
+    process_terminated = {"value": False}
+
+    async def cancelling_extract(*args, **kwargs):
+        started.set()
+        try:
+            while True:
+                await asyncio.sleep(0)
+        except asyncio.CancelledError:
+            process_terminated["value"] = True
+            raise
+
+    monkeypatch.setattr(document_api, "extract_document_isolated_async", cancelling_extract)
+    started = asyncio.Event()
+
+    async def run_test() -> None:
+        upload = UploadFile(filename="sample.txt", file=io.BytesIO(b"hello"))
+        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(settings=settings, document_semaphore=asyncio.Semaphore(1))))
+        task = asyncio.create_task(upload_document(request, upload))
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.wait_for(request.app.state.document_semaphore.acquire(), timeout=1)
+        assert request.app.state.document_semaphore.locked() is True
+
+    asyncio.run(run_test())
+    assert process_terminated["value"] is True
+    assert list(settings.resolved_upload_directory.rglob("*")) == []
+    assert list(settings.resolved_extracted_text_directory.rglob("*")) == []
+
+
+def test_health_responds_during_document_processing(monkeypatch, tmp_path) -> None:
+    app, _ = build_test_app(tmp_path, FakeOllamaClient())
+    entered = threading.Event()
+    release = threading.Event()
+
+    async def slow_extract(*args, **kwargs):
+        entered.set()
+        while not release.is_set():
+            await asyncio.sleep(0)
+        return SimpleNamespace(text="hello", char_count=5, page_count=None, status="ready", warning_code=None)
+
+    monkeypatch.setattr(document_api, "extract_document_isolated_async", slow_extract)
+
+    with TestClient(app) as client:
+        upload_response = {}
+
+        def run_upload():
+            upload_response["response"] = client.post("/documents/upload", files={"file": ("sample.txt", b"hello", "text/plain")})
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(run_upload)
+            assert entered.wait(timeout=1)
+            health = client.get("/health")
+            release.set()
+            future.result()
+
+    assert health.status_code == 200
+    assert upload_response["response"].status_code == 201

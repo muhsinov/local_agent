@@ -10,7 +10,7 @@ from fastapi import APIRouter, File, Query, Request, UploadFile, status
 from app.api.errors import ApiError
 from app.config import Settings
 from app.database import connection_scope
-from app.documents.isolated_extraction import extract_document_isolated
+from app.documents.isolated_extraction import extract_document_isolated_async
 from app.documents.models import DocumentRecord
 from app.documents.storage import (
     build_atomic_part_path,
@@ -75,13 +75,15 @@ def _cleanup_upload_artifacts(*paths: Path | None) -> None:
     cleanup_paths(list(paths))
 
 
-def _restore_quarantine(source: Path | None, target: Path | None) -> None:
+def _restore_quarantine(source: Path | None, target: Path | None) -> bool:
     if source is None or target is None or not source.exists():
-        return
+        return True
     try:
         os.replace(source, target)
+        return True
     except OSError:
         print("Document cleanup failed.")
+        return False
 
 
 @router.post("/upload", response_model=DocumentMetadataResponse, status_code=status.HTTP_201_CREATED)
@@ -123,7 +125,7 @@ async def upload_document(request: Request, file: UploadFile = File(...)) -> Doc
         except OSError:
             raise _storage_error() from None
 
-        validate_file_signature(raw_part_path, file_type, settings)
+        await asyncio.to_thread(validate_file_signature, raw_part_path, file_type, settings)
         sha256_hex = sha256.hexdigest()
 
         try:
@@ -142,7 +144,10 @@ async def upload_document(request: Request, file: UploadFile = File(...)) -> Doc
             ) from None
 
         try:
-            extracted = extract_document_isolated(raw_final_path, file_type, settings)
+            extracted = await extract_document_isolated_async(raw_final_path, file_type, settings)
+        except asyncio.CancelledError:
+            _cleanup_upload_artifacts(text_part_path, text_final_path, raw_part_path, raw_final_path)
+            raise
         except ApiError:
             raise
         except OSError:
@@ -160,19 +165,24 @@ async def upload_document(request: Request, file: UploadFile = File(...)) -> Doc
         except OSError:
             raise _storage_error() from None
 
-        record = create_document(
-            settings,
-            file_name=original_name,
-            file_path=raw_relative_path,
-            file_type=file_type,
-            size_bytes=total_bytes,
-            sha256=sha256_hex,
-            status=extracted.status,
-            text_path=text_relative_path,
-            char_count=extracted.char_count,
-            page_count=extracted.page_count,
-            warning_code=extracted.warning_code,
-        )
+        try:
+            record = create_document(
+                settings,
+                file_name=original_name,
+                file_path=raw_relative_path,
+                file_type=file_type,
+                size_bytes=total_bytes,
+                sha256=sha256_hex,
+                status=extracted.status,
+                text_path=text_relative_path,
+                char_count=extracted.char_count,
+                page_count=extracted.page_count,
+                warning_code=extracted.warning_code,
+            )
+        except ApiError:
+            raise
+        except Exception:
+            raise _database_error() from None
         write_audit_log(
             settings,
             action="document_upload",
@@ -187,6 +197,9 @@ async def upload_document(request: Request, file: UploadFile = File(...)) -> Doc
             execution_time_ms=int((perf_counter() - started_at) * 1000),
         )
         return _to_metadata(record)
+    except asyncio.CancelledError:
+        _cleanup_upload_artifacts(text_part_path, text_final_path, raw_part_path, raw_final_path)
+        raise
     except ApiError:
         _cleanup_upload_artifacts(text_part_path, text_final_path, raw_part_path, raw_final_path)
         raise
@@ -199,7 +212,10 @@ async def upload_document(request: Request, file: UploadFile = File(...)) -> Doc
     finally:
         if acquired:
             semaphore.release()
-        await file.close()
+        try:
+            await file.close()
+        except Exception:
+            print("Document cleanup failed.")
 
 
 @router.get("", response_model=DocumentListResponse)
@@ -302,10 +318,13 @@ def delete_document(request: Request, document_id: int, confirm: bool = Query(de
             _restore_quarantine(raw_quarantine, raw_path)
         raise
     except sqlite3.Error:
+        restored_ok = True
         if text_renamed:
-            _restore_quarantine(text_quarantine, text_path)
+            restored_ok = _restore_quarantine(text_quarantine, text_path) and restored_ok
         if raw_renamed:
-            _restore_quarantine(raw_quarantine, raw_path)
+            restored_ok = _restore_quarantine(raw_quarantine, raw_path) and restored_ok
+        if not restored_ok:
+            print("Document cleanup failed.")
         raise _database_error() from None
 
     cleanup_pending = False

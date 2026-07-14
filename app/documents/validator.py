@@ -30,7 +30,8 @@ def validate_file_signature(file_path: Path, file_type: str, settings: Settings)
     """Validate the stored file signature against its declared type."""
 
     if file_type == "pdf":
-        header = file_path.read_bytes()[:1024]
+        with file_path.open("rb") as handle:
+            header = handle.read(1024)
         if b"%PDF-" not in header:
             raise ApiError(415, "FILE_TYPE_MISMATCH", "PDF fayl signaturasi noto'g'ri.")
         return

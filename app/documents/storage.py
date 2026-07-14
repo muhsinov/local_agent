@@ -1,11 +1,22 @@
 import os
+import re
 from codecs import getincrementaldecoder
+from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
 from app.api.errors import ApiError
 from app.config import PROJECT_ROOT
 from app.security.path_validator import resolve_within
+
+
+QUARANTINE_PATTERN = re.compile(r"^(?P<original>.+)\.(?P<operation_id>[0-9a-f]{32})\.delete-pending$")
+
+
+@dataclass(frozen=True)
+class QuarantineEntry:
+    quarantine_path: Path
+    original_path: Path
 
 
 def build_internal_filename(extension: str) -> str:
@@ -114,16 +125,20 @@ def read_text_preview(path: Path, char_limit: int, chunk_size: int = 4096) -> st
     return "".join(parts)
 
 
-def cleanup_stale_quarantine_files(base_directory: Path) -> None:
-    """Best-effort removal of stale quarantine files within a single storage tree."""
+def parse_quarantine_entry(base_directory: Path, quarantine_path: Path) -> QuarantineEntry | None:
+    """Parse a quarantine filename and map it back to its original in-tree path."""
 
     base = base_directory.resolve()
-    for path in base.rglob("*.delete-pending"):
-        try:
-            path.resolve().relative_to(base)
-        except ValueError:
-            continue
-        try:
-            safe_unlink(path)
-        except OSError:
-            print("Document cleanup failed.")
+    try:
+        resolved_quarantine = quarantine_path.resolve()
+        resolved_quarantine.relative_to(base)
+    except ValueError:
+        return None
+    match = QUARANTINE_PATTERN.match(quarantine_path.name)
+    if match is None:
+        return None
+    try:
+        original_path = resolve_within(base, quarantine_path.with_name(match.group("original")).relative_to(base))
+    except (ApiError, ValueError):
+        return None
+    return QuarantineEntry(quarantine_path=resolved_quarantine, original_path=original_path)

@@ -1,3 +1,4 @@
+import asyncio
 import zipfile
 from pathlib import Path
 
@@ -7,7 +8,10 @@ from pypdf import PdfWriter
 
 from app.api.errors import ApiError
 from app.documents.extractor import extract_document
-from app.documents.isolated_extraction import extract_document_isolated
+from app.documents.isolated_extraction import (
+    extract_document_isolated,
+    extract_document_isolated_async,
+)
 from app.documents.validator import validate_docx_archive
 from tests.conftest import build_settings
 
@@ -42,6 +46,7 @@ class InlineProcess:
         self.pid = 4242
         self.terminated = False
         self.killed = False
+        self.exitcode = 0
 
     def start(self):
         self._alive = True
@@ -57,18 +62,25 @@ class InlineProcess:
     def terminate(self):
         self.terminated = True
         self._alive = False
+        self.exitcode = -15
 
     def kill(self):
         self.killed = True
         self._alive = False
+        self.exitcode = -9
 
 
 class HangingProcess:
+    instances: list["HangingProcess"] = []
+
     def __init__(self, *, target, args):
+        self._connection = args[0]
         self.pid = 4343
         self._alive = False
         self.terminated = False
         self.killed = False
+        self.exitcode = None
+        HangingProcess.instances.append(self)
 
     def start(self):
         self._alive = True
@@ -82,10 +94,56 @@ class HangingProcess:
     def terminate(self):
         self.terminated = True
         self._alive = False
+        self.exitcode = -15
 
     def kill(self):
         self.killed = True
         self._alive = False
+        self.exitcode = -9
+
+
+class PayloadProcess:
+    def __init__(self, *, target, args, payload=None, close_without_payload=False):
+        self._connection = args[0]
+        self._payload = payload
+        self._close_without_payload = close_without_payload
+        self._alive = False
+        self.pid = 4444
+        self.exitcode = 0
+        self.terminated = False
+        self.killed = False
+
+    def start(self):
+        self._alive = True
+        if self._close_without_payload:
+            self._connection.close()
+        else:
+            self._connection.send(self._payload)
+            self._connection.close()
+        self._alive = False
+
+    def is_alive(self):
+        return self._alive
+
+    def join(self, timeout=None):
+        return None
+
+    def terminate(self):
+        self.terminated = True
+        self._alive = False
+        self.exitcode = -15
+
+    def kill(self):
+        self.killed = True
+        self._alive = False
+        self.exitcode = -9
+
+
+def payload_process_factory(payload=None, close_without_payload=False):
+    def _factory(*, target, args):
+        return PayloadProcess(target=target, args=args, payload=payload, close_without_payload=close_without_payload)
+
+    return _factory
 
 
 def test_extract_txt_document(tmp_path: Path) -> None:
@@ -217,3 +275,133 @@ def test_extract_document_isolated_worker_exception(tmp_path: Path) -> None:
     with pytest.raises(ApiError) as exc:
         extract_document_isolated(path, "txt", settings, process_factory=InlineProcess, poll_interval_seconds=0.0)
     assert exc.value.code == "INVALID_TEXT_ENCODING"
+
+
+def test_extract_document_isolated_invalid_success_payload(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    path = tmp_path / "sample.txt"
+    path.write_text("hello", encoding="utf-8")
+    with pytest.raises(ApiError) as exc:
+        extract_document_isolated(
+            path,
+            "txt",
+            settings,
+            process_factory=payload_process_factory({"ok": True, "result": {"text": "hello", "char_count": 99, "status": "ready", "page_count": None, "warning_code": None}}),
+            poll_interval_seconds=0.0,
+        )
+    assert exc.value.code == "DOCUMENT_PROCESSING_ERROR"
+
+
+def test_extract_document_isolated_invalid_error_payload(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    path = tmp_path / "sample.txt"
+    path.write_text("hello", encoding="utf-8")
+    with pytest.raises(ApiError) as exc:
+        extract_document_isolated(
+            path,
+            "txt",
+            settings,
+            process_factory=payload_process_factory({"ok": False, "error": {"status_code": "500"}}),
+            poll_interval_seconds=0.0,
+        )
+    assert exc.value.code == "DOCUMENT_PROCESSING_ERROR"
+
+
+def test_extract_document_isolated_child_exit_without_payload(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    path = tmp_path / "sample.txt"
+    path.write_text("hello", encoding="utf-8")
+    with pytest.raises(ApiError) as exc:
+        extract_document_isolated(
+            path,
+            "txt",
+            settings,
+            process_factory=payload_process_factory(close_without_payload=True),
+            poll_interval_seconds=0.0,
+        )
+    assert exc.value.code == "DOCUMENT_PROCESSING_ERROR"
+
+
+def test_extract_document_isolated_pipe_eof_is_stable_error(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    path = tmp_path / "sample.txt"
+    path.write_text("hello", encoding="utf-8")
+    with pytest.raises(ApiError) as exc:
+        extract_document_isolated(
+            path,
+            "txt",
+            settings,
+            process_factory=payload_process_factory(close_without_payload=True),
+            poll_interval_seconds=0.0,
+        )
+    assert exc.value.code == "DOCUMENT_PROCESSING_ERROR"
+
+
+def test_extract_document_isolated_async_keeps_event_loop_responsive(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    path = tmp_path / "sample.txt"
+    path.write_text("hello", encoding="utf-8")
+    heartbeats: list[int] = []
+
+    async def fake_sleep(_: float) -> None:
+        heartbeats.append(len(heartbeats))
+        if len(heartbeats) == 3:
+            raise StopAsyncIteration
+
+    async def run_test() -> None:
+        with pytest.raises(StopAsyncIteration):
+            await extract_document_isolated_async(
+                path,
+                "txt",
+                settings,
+                process_factory=HangingProcess,
+                poll_interval_seconds=0.01,
+                sleep=fake_sleep,
+            )
+
+    asyncio.run(run_test())
+    assert len(heartbeats) == 3
+
+
+def test_extract_document_isolated_async_success(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    path = tmp_path / "sample.txt"
+    path.write_text("hello", encoding="utf-8")
+
+    async def run_test() -> None:
+        extracted = await extract_document_isolated_async(
+            path,
+            "txt",
+            settings,
+            process_factory=InlineProcess,
+            poll_interval_seconds=0.0,
+        )
+        assert extracted.text == "hello"
+
+    asyncio.run(run_test())
+
+
+def test_extract_document_isolated_async_cancellation_terminates_process(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    path = tmp_path / "sample.txt"
+    path.write_text("hello", encoding="utf-8")
+    HangingProcess.instances.clear()
+
+    async def run_test() -> None:
+        task = asyncio.create_task(
+            extract_document_isolated_async(
+                path,
+                "txt",
+                settings,
+                process_factory=HangingProcess,
+                poll_interval_seconds=0.0,
+            )
+        )
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run_test())
+    assert HangingProcess.instances
+    assert HangingProcess.instances[-1].terminated is True

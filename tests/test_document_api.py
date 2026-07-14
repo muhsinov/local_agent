@@ -191,7 +191,7 @@ def test_document_delete_unlink_failure_returns_success(monkeypatch, tmp_path) -
     assert list(settings.resolved_upload_directory.glob("*.delete-pending"))
 
 
-def test_startup_cleanup_removes_stale_quarantine_only_in_storage_dirs(tmp_path) -> None:
+def test_startup_keeps_invalid_quarantine_name_untouched(tmp_path) -> None:
     settings = build_settings(tmp_path)
     settings.resolved_upload_directory.mkdir(parents=True, exist_ok=True)
     settings.resolved_extracted_text_directory.mkdir(parents=True, exist_ok=True)
@@ -209,8 +209,8 @@ def test_startup_cleanup_removes_stale_quarantine_only_in_storage_dirs(tmp_path)
     with TestClient(app):
         pass
 
-    assert stale_upload.exists() is False
-    assert stale_text.exists() is False
+    assert stale_upload.exists() is True
+    assert stale_text.exists() is True
     assert outside.exists() is True
 
 

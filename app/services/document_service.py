@@ -65,45 +65,51 @@ def create_document(
 
     try:
         with connection_scope(settings) as connection:
-            cursor = connection.execute(
-                """
-                INSERT INTO documents (
-                    file_name,
-                    file_path,
-                    file_type,
-                    size_bytes,
-                    sha256,
-                    status,
-                    text_path,
-                    char_count,
-                    page_count,
-                    warning_code
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-                """,
-                (
-                    file_name,
-                    file_path,
-                    file_type,
-                    size_bytes,
-                    sha256,
-                    status,
-                    text_path,
-                    char_count,
-                    page_count,
-                    warning_code,
-                ),
-            )
-            document_id = int(cursor.lastrowid)
-            connection.commit()
-            row = connection.execute("SELECT * FROM documents WHERE id = ?;", (document_id,)).fetchone()
+            connection.execute("BEGIN;")
+            try:
+                cursor = connection.execute(
+                    """
+                    INSERT INTO documents (
+                        file_name,
+                        file_path,
+                        file_type,
+                        size_bytes,
+                        sha256,
+                        status,
+                        text_path,
+                        char_count,
+                        page_count,
+                        warning_code
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    """,
+                    (
+                        file_name,
+                        file_path,
+                        file_type,
+                        size_bytes,
+                        sha256,
+                        status,
+                        text_path,
+                        char_count,
+                        page_count,
+                        warning_code,
+                    ),
+                )
+                document_id = int(cursor.lastrowid)
+                row = connection.execute("SELECT * FROM documents WHERE id = ?;", (document_id,)).fetchone()
+                if row is None:
+                    raise ApiError(500, "DATABASE_ERROR", "Lokal database operatsiyasini bajarib bo'lmadi.")
+                record = _record_from_row(row)
+                connection.commit()
+                return record
+            except Exception:
+                connection.rollback()
+                raise
     except sqlite3.IntegrityError as exc:
         message = str(exc).lower()
         if "documents.sha256" in message or "idx_documents_sha256" in message or "unique constraint failed" in message:
             _raise_duplicate_document(settings, sha256)
         raise
-    if not row:
-        raise ApiError(500, "DATABASE_ERROR", "Lokal database operatsiyasini bajarib bo'lmadi.")
-    return _record_from_row(row)
 
 
 def get_document(settings: Settings, document_id: int) -> DocumentRecord | None:
