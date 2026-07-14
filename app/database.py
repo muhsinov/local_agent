@@ -6,7 +6,10 @@ from app.config import Settings, get_settings
 
 
 SCHEMA_VERSION = 2
-EXPECTED_TABLES = ("conversations", "messages", "documents", "audit_logs")
+EXPECTED_TABLES = ("conversations", "messages", "documents", "audit_logs", "schema_version")
+CONVERSATION_COLUMNS = {"id", "created_at", "title", "updated_at"}
+MESSAGE_COLUMNS = {"id", "conversation_id", "role", "content", "created_at"}
+AUDIT_LOG_COLUMNS = {"id", "action", "tool_name", "arguments", "status", "execution_time_ms", "created_at"}
 DOCUMENT_COLUMNS_V2 = {
     "id",
     "file_name",
@@ -59,6 +62,15 @@ def get_schema_version(connection: sqlite3.Connection) -> int:
     return int(row[0]) if row else 0
 
 
+def get_schema_version_table_value(connection: sqlite3.Connection) -> int | None:
+    """Return the auxiliary schema_version table value when present."""
+
+    if "schema_version" not in fetch_existing_tables(connection):
+        return None
+    row = connection.execute("SELECT version FROM schema_version LIMIT 1;").fetchone()
+    return int(row[0]) if row else None
+
+
 def set_schema_version(connection: sqlite3.Connection, version: int) -> None:
     """Set SQLite PRAGMA user_version."""
 
@@ -85,7 +97,7 @@ def create_schema_version_table(connection: sqlite3.Connection) -> None:
 def create_tables(connection: sqlite3.Connection) -> None:
     """Create the current schema tables."""
 
-    connection.executescript(
+    connection.execute(
         """
         CREATE TABLE IF NOT EXISTS conversations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -93,7 +105,10 @@ def create_tables(connection: sqlite3.Connection) -> None:
             title TEXT NOT NULL DEFAULT 'New conversation',
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
-
+        """
+    )
+    connection.execute(
+        """
         CREATE TABLE IF NOT EXISTS messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             conversation_id INTEGER NOT NULL,
@@ -102,7 +117,10 @@ def create_tables(connection: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
         );
-
+        """
+    )
+    connection.execute(
+        """
         CREATE TABLE IF NOT EXISTS documents (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             file_name TEXT NOT NULL,
@@ -119,7 +137,10 @@ def create_tables(connection: sqlite3.Connection) -> None:
             warning_code TEXT,
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
-
+        """
+    )
+    connection.execute(
+        """
         CREATE TABLE IF NOT EXISTS audit_logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             action TEXT NOT NULL,
@@ -131,19 +152,8 @@ def create_tables(connection: sqlite3.Connection) -> None:
         );
         """
     )
-    connection.execute(
-        """
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_sha256
-        ON documents(sha256)
-        WHERE sha256 IS NOT NULL;
-        """
-    )
-    connection.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_documents_created_at
-        ON documents(created_at DESC);
-        """
-    )
+    create_document_indexes(connection)
+    create_schema_version_table(connection)
 
 
 def fetch_existing_tables(connection: sqlite3.Connection) -> set[str]:
@@ -173,6 +183,21 @@ def index_exists(connection: sqlite3.Connection, table_name: str, index_name: st
     return any(str(row["name"]) == index_name for row in rows)
 
 
+def messages_foreign_key_valid(connection: sqlite3.Connection) -> bool:
+    """Validate that messages points to conversations with cascade delete."""
+
+    rows = connection.execute("PRAGMA foreign_key_list(messages);").fetchall()
+    for row in rows:
+        if (
+            str(row["table"]) == "conversations"
+            and str(row["from"]) == "conversation_id"
+            and str(row["to"]) == "id"
+            and str(row["on_delete"]).upper() == "CASCADE"
+        ):
+            return True
+    return False
+
+
 def create_document_indexes(connection: sqlite3.Connection) -> None:
     """Create indexes required by the documents table."""
 
@@ -191,15 +216,9 @@ def create_document_indexes(connection: sqlite3.Connection) -> None:
     )
 
 
-def migrate_documents_table_to_v2(connection: sqlite3.Connection) -> None:
-    """Migrate legacy documents rows into the v2 table shape."""
+def create_documents_v2_table(connection: sqlite3.Connection) -> None:
+    """Create the version 2 documents table."""
 
-    columns = get_table_columns(connection, "documents")
-    if DOCUMENT_COLUMNS_V2.issubset(columns):
-        create_document_indexes(connection)
-        return
-
-    connection.execute("ALTER TABLE documents RENAME TO documents_legacy;")
     connection.execute(
         """
         CREATE TABLE documents (
@@ -220,6 +239,11 @@ def migrate_documents_table_to_v2(connection: sqlite3.Connection) -> None:
         );
         """
     )
+
+
+def copy_documents_rows_to_v2(connection: sqlite3.Connection) -> None:
+    """Copy legacy document rows into the version 2 table."""
+
     connection.execute(
         """
         INSERT INTO documents (
@@ -256,6 +280,19 @@ def migrate_documents_table_to_v2(connection: sqlite3.Connection) -> None:
         FROM documents_legacy;
         """
     )
+
+
+def migrate_documents_table_to_v2(connection: sqlite3.Connection) -> None:
+    """Migrate legacy documents rows into the v2 table shape."""
+
+    columns = get_table_columns(connection, "documents")
+    if DOCUMENT_COLUMNS_V2.issubset(columns):
+        create_document_indexes(connection)
+        return
+
+    connection.execute("ALTER TABLE documents RENAME TO documents_legacy;")
+    create_documents_v2_table(connection)
+    copy_documents_rows_to_v2(connection)
     connection.execute("DROP TABLE documents_legacy;")
     create_document_indexes(connection)
 
@@ -264,20 +301,15 @@ def migrate_schema(connection: sqlite3.Connection) -> None:
     """Migrate any existing database to schema version 2."""
 
     existing_tables = fetch_existing_tables(connection)
-    current_version = get_schema_version(connection)
-
     if not existing_tables:
         create_tables(connection)
-        create_schema_version_table(connection)
         set_schema_version(connection, SCHEMA_VERSION)
         return
 
-    if not set(EXPECTED_TABLES).issubset(existing_tables):
+    if not set(EXPECTED_TABLES[:-1]).issubset(existing_tables):
         raise RuntimeError("Mavjud database schema to'liq emas yoki kutilmagan holatda.")
 
-    if "documents" in existing_tables:
-        migrate_documents_table_to_v2(connection)
-
+    migrate_documents_table_to_v2(connection)
     create_schema_version_table(connection)
     set_schema_version(connection, SCHEMA_VERSION)
 
@@ -314,7 +346,18 @@ def check_database(settings: Settings | None = None) -> bool:
             connection.execute("SELECT 1;").fetchone()
             if get_schema_version(connection) != SCHEMA_VERSION:
                 return False
-            if not set(EXPECTED_TABLES).issubset(fetch_existing_tables(connection)):
+            if get_schema_version_table_value(connection) != SCHEMA_VERSION:
+                return False
+            existing_tables = fetch_existing_tables(connection)
+            if not set(EXPECTED_TABLES).issubset(existing_tables):
+                return False
+            if not CONVERSATION_COLUMNS.issubset(get_table_columns(connection, "conversations")):
+                return False
+            if not MESSAGE_COLUMNS.issubset(get_table_columns(connection, "messages")):
+                return False
+            if not messages_foreign_key_valid(connection):
+                return False
+            if not AUDIT_LOG_COLUMNS.issubset(get_table_columns(connection, "audit_logs")):
                 return False
             if not DOCUMENT_COLUMNS_V2.issubset(get_table_columns(connection, "documents")):
                 return False

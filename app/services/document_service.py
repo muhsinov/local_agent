@@ -36,6 +36,17 @@ def find_document_by_sha256(settings: Settings, sha256: str) -> DocumentRecord |
     return _record_from_row(row) if row else None
 
 
+def _raise_duplicate_document(settings: Settings, sha256: str) -> None:
+    duplicate = find_document_by_sha256(settings, sha256)
+    if duplicate is not None:
+        raise ApiError(
+            409,
+            "DOCUMENT_DUPLICATE",
+            "Bu hujjat avval yuklangan.",
+            extra={"existing_document_id": duplicate.id},
+        )
+
+
 def create_document(
     settings: Settings,
     *,
@@ -52,38 +63,44 @@ def create_document(
 ) -> DocumentRecord:
     """Create a document row and return the created record."""
 
-    with connection_scope(settings) as connection:
-        cursor = connection.execute(
-            """
-            INSERT INTO documents (
-                file_name,
-                file_path,
-                file_type,
-                size_bytes,
-                sha256,
-                status,
-                text_path,
-                char_count,
-                page_count,
-                warning_code
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-            """,
-            (
-                file_name,
-                file_path,
-                file_type,
-                size_bytes,
-                sha256,
-                status,
-                text_path,
-                char_count,
-                page_count,
-                warning_code,
-            ),
-        )
-        document_id = int(cursor.lastrowid)
-        connection.commit()
-        row = connection.execute("SELECT * FROM documents WHERE id = ?;", (document_id,)).fetchone()
+    try:
+        with connection_scope(settings) as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO documents (
+                    file_name,
+                    file_path,
+                    file_type,
+                    size_bytes,
+                    sha256,
+                    status,
+                    text_path,
+                    char_count,
+                    page_count,
+                    warning_code
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                (
+                    file_name,
+                    file_path,
+                    file_type,
+                    size_bytes,
+                    sha256,
+                    status,
+                    text_path,
+                    char_count,
+                    page_count,
+                    warning_code,
+                ),
+            )
+            document_id = int(cursor.lastrowid)
+            connection.commit()
+            row = connection.execute("SELECT * FROM documents WHERE id = ?;", (document_id,)).fetchone()
+    except sqlite3.IntegrityError as exc:
+        message = str(exc).lower()
+        if "documents.sha256" in message or "idx_documents_sha256" in message or "unique constraint failed" in message:
+            _raise_duplicate_document(settings, sha256)
+        raise
     if not row:
         raise ApiError(500, "DATABASE_ERROR", "Lokal database operatsiyasini bajarib bo'lmadi.")
     return _record_from_row(row)

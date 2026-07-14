@@ -35,6 +35,18 @@ class Settings(BaseSettings):
     max_docx_uncompressed_mb: int = Field(default=50, alias="MAX_DOCX_UNCOMPRESSED_MB", ge=1, le=200)
     max_docx_zip_entries: int = Field(default=2000, alias="MAX_DOCX_ZIP_ENTRIES", ge=10, le=10000)
     max_docx_compression_ratio: int = Field(default=100, alias="MAX_DOCX_COMPRESSION_RATIO", ge=10, le=500)
+    document_extraction_timeout_seconds: int = Field(
+        default=60,
+        alias="DOCUMENT_EXTRACTION_TIMEOUT_SECONDS",
+        ge=5,
+        le=300,
+    )
+    document_extraction_memory_mb: int = Field(
+        default=512,
+        alias="DOCUMENT_EXTRACTION_MEMORY_MB",
+        ge=128,
+        le=2048,
+    )
     document_preview_chars: int = Field(default=5000, alias="DOCUMENT_PREVIEW_CHARS", ge=100, le=50000)
     max_document_list_limit: int = Field(default=100, alias="MAX_DOCUMENT_LIST_LIMIT", ge=1, le=500)
     max_original_filename_chars: int = Field(default=180, alias="MAX_ORIGINAL_FILENAME_CHARS", ge=20, le=255)

@@ -67,6 +67,7 @@ def build_settings(tmp_path: Path, **overrides: object) -> Settings:
     values = {
         "DATABASE_PATH": tmp_path / "test_local_agent.db",
         "UPLOAD_DIRECTORY": tmp_path / "uploads",
+        "EXTRACTED_TEXT_DIRECTORY": tmp_path / "extracted",
         "VECTOR_STORE_DIRECTORY": tmp_path / "vector_store",
     }
     values.update(overrides)

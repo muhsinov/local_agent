@@ -1,6 +1,6 @@
 # Local Agent Demo
 
-`Local Agent Demo` Windows 10 va Python 3.11 uchun Docker'siz ishlaydigan lokal AI assistant poydevori. Hozir FastAPI backend, Ollama chat, SQLite conversation storage, xavfsiz document upload va text extraction mavjud.
+`Local Agent Demo` Windows 10 va Python 3.11 uchun Docker'siz ishlaydigan lokal AI assistant poydevori. Hozir FastAPI backend, Ollama chat, SQLite conversation storage, xavfsiz document upload va isolated text extraction mavjud.
 
 Primary specification: [TZ.md](TZ.md)
 
@@ -25,8 +25,9 @@ Primary specification: [TZ.md](TZ.md)
 - `pytest==8.4.1`
 - `httpx==0.28.1`
 - `python-multipart==0.0.32`
-- `pypdf==6.1.4`
+- `pypdf==6.14.2`
 - `python-docx==1.2.0`
+- `psutil==6.1.1`
 
 ## Talablar
 
@@ -41,7 +42,7 @@ Primary specification: [TZ.md](TZ.md)
 .\scripts\setup.ps1
 ```
 
-Execution policy muammosi bo‘lsa:
+Execution policy muammosi bo'lsa:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
@@ -53,7 +54,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\scripts\prepare_ollama.ps1
 ```
 
-Qo‘lda:
+Qo'lda:
 
 ```powershell
 ollama pull qwen3:1.7b
@@ -78,7 +79,7 @@ ollama pull qwen3:1.7b
 - `.txt`
 - `.md`
 
-Qo‘llab-quvvatlanmaydi: `.doc`, `.rtf`, `.odt`, `.html`, executable fayllar, noto‘g‘ri signature’li soxta fayllar.
+Qo'llab-quvvatlanmaydi: `.doc`, `.rtf`, `.odt`, `.html`, executable fayllar, noto'g'ri signature'li soxta fayllar.
 
 ## Document limitlar
 
@@ -88,7 +89,9 @@ Qo‘llab-quvvatlanmaydi: `.doc`, `.rtf`, `.odt`, `.html`, executable fayllar, n
 - PDF page content limiti: `MAX_PDF_PAGE_CONTENT_MB`
 - extracted text limiti: `MAX_EXTRACTED_CHARS`
 - DOCX archive limitlari: zip entry count, uncompressed size, compression ratio
-- scanned PDF uchun OCR yo‘q
+- extraction timeout: `DOCUMENT_EXTRACTION_TIMEOUT_SECONDS`
+- extraction memory limiti: `DOCUMENT_EXTRACTION_MEMORY_MB`
+- scanned PDF uchun OCR yo'q
 
 ## API
 
@@ -102,7 +105,7 @@ Qo‘llab-quvvatlanmaydi: `.doc`, `.rtf`, `.odt`, `.html`, executable fayllar, n
 - Preview: `GET /documents/{id}/text?limit=5000`
 - Delete: `DELETE /documents/{id}?confirm=true`
 
-Windows PowerShell 5.1 `Invoke-RestMethod -Form` qo‘llamasa:
+Windows PowerShell 5.1 `Invoke-RestMethod -Form` qo'llamasa:
 
 ```powershell
 curl.exe -F "file=@sample.txt" http://127.0.0.1:8000/documents/upload
@@ -112,18 +115,19 @@ curl.exe -F "file=@sample.txt" http://127.0.0.1:8000/documents/upload
 
 - chat hali upload qilingan hujjatlarni ishlatmaydi
 - RAG keyingi bosqich
-- embeddings yo‘q
-- FAISS yo‘q
-- tool calling yo‘q
-- document extraction bir vaqtning o‘zida faqat bitta request
-- chat bir vaqtning o‘zida faqat bitta request
+- embeddings yo'q
+- FAISS yo'q
+- tool calling yo'q
+- document extraction bir vaqtning o'zida faqat bitta request
+- extraction spawned subprocess ichida bajariladi
+- chat bir vaqtning o'zida faqat bitta request
 
 ## Storage
 
 - raw upload fayllar: `data/uploads`
 - extracted text fayllar: `data/extracted`
-- bu fayllar Git’ga kirmaydi
-- API response’larda internal path yoki absolute Windows path qaytarilmaydi
+- bu fayllar Git'ga kirmaydi
+- API response'larda internal path yoki absolute Windows path qaytarilmaydi
 
 ## Common errors
 
@@ -137,8 +141,11 @@ curl.exe -F "file=@sample.txt" http://127.0.0.1:8000/documents/upload
 - `DOCUMENT_DUPLICATE`
 - `DOCUMENT_STORAGE_ERROR`
 - `DOCUMENT_PROCESSOR_BUSY`
+- `DOCUMENT_EXTRACTION_TIMEOUT`
+- `DOCUMENT_EXTRACTION_MEMORY_LIMIT`
+- `DOCUMENT_PROCESSING_ERROR`
 - `CONFIRMATION_REQUIRED`
 
 ## Eslatma
 
-Upload qilingan hujjatlar hozircha faqat saqlanadi, extract qilinadi, preview qilinadi va o‘chiriladi. Ular `/chat` promptiga ulanmagan.
+Upload qilingan hujjatlar hozircha faqat saqlanadi, extract qilinadi, preview qilinadi va o'chiriladi. Ular `/chat` promptiga ulanmagan.

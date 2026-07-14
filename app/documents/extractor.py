@@ -1,4 +1,3 @@
-import io
 from pathlib import Path
 
 from docx import Document
@@ -114,14 +113,6 @@ def extract_pdf_document(file_path: Path, settings: Settings) -> ExtractedDocume
 
     page_texts: list[str] = []
     for page in reader.pages:
-        contents = page.get_contents()
-        if contents is not None:
-            if isinstance(contents, list):
-                raw_size = sum(len(item.get_data()) for item in contents if item is not None)
-            else:
-                raw_size = len(contents.get_data())
-            if raw_size > settings.max_pdf_page_content_mb * 1024 * 1024:
-                raise ApiError(422, "PDF_CONTENT_TOO_LARGE", "PDF sahifa content hajmi juda katta.")
         text = page.extract_text() or ""
         page_texts.append(text.strip())
         if sum(len(item) for item in page_texts) > settings.max_extracted_chars:

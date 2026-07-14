@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from app.config import Settings, get_settings
+from app.database import check_database
 from app.main import create_app
 
 
@@ -13,6 +14,7 @@ def build_test_settings(tmp_path: Path) -> Settings:
     return Settings(
         DATABASE_PATH=tmp_path / "test_local_agent.db",
         UPLOAD_DIRECTORY=tmp_path / "uploads",
+        EXTRACTED_TEXT_DIRECTORY=tmp_path / "extracted",
         VECTOR_STORE_DIRECTORY=tmp_path / "vector_store",
     )
 
@@ -98,6 +100,12 @@ def test_invalid_config_values_raise_validation_error() -> None:
     with pytest.raises(ValidationError):
         Settings(MAX_FILE_SIZE_MB=101)
 
+    with pytest.raises(ValidationError):
+        Settings(DOCUMENT_EXTRACTION_TIMEOUT_SECONDS=301)
+
+    with pytest.raises(ValidationError):
+        Settings(DOCUMENT_EXTRACTION_MEMORY_MB=64)
+
 
 def test_global_settings_cache_is_unchanged() -> None:
     get_settings.cache_clear()
@@ -111,3 +119,73 @@ def test_global_settings_cache_is_unchanged() -> None:
 
     current = get_settings()
     assert current.resolved_database_path == baseline.resolved_database_path
+
+
+def test_health_endpoint_reports_error_for_bad_schema_version(tmp_path: Path) -> None:
+    test_settings = build_test_settings(tmp_path)
+    app = create_app(test_settings)
+
+    with TestClient(app) as client:
+        with sqlite3.connect(test_settings.resolved_database_path) as connection:
+            connection.execute("UPDATE schema_version SET version = 1;")
+            connection.commit()
+        response = client.get("/health")
+
+    assert response.status_code == 503
+    assert response.json()["database"] == "error"
+
+
+def test_check_database_rejects_missing_messages_foreign_key(tmp_path: Path) -> None:
+    settings = build_test_settings(tmp_path)
+    connection = sqlite3.connect(settings.resolved_database_path)
+    connection.executescript(
+        """
+        CREATE TABLE conversations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            title TEXT NOT NULL DEFAULT 'New conversation',
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            conversation_id INTEGER NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE documents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_name TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            file_type TEXT NOT NULL,
+            indexed INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            size_bytes INTEGER NOT NULL DEFAULT 0,
+            sha256 TEXT,
+            status TEXT NOT NULL DEFAULT 'uploaded',
+            text_path TEXT,
+            char_count INTEGER NOT NULL DEFAULT 0,
+            page_count INTEGER,
+            warning_code TEXT,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE UNIQUE INDEX idx_documents_sha256 ON documents(sha256) WHERE sha256 IS NOT NULL;
+        CREATE INDEX idx_documents_created_at ON documents(created_at DESC);
+        CREATE TABLE audit_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            action TEXT NOT NULL,
+            tool_name TEXT,
+            arguments TEXT,
+            status TEXT NOT NULL,
+            execution_time_ms INTEGER,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE schema_version (version INTEGER NOT NULL);
+        INSERT INTO schema_version(version) VALUES (2);
+        PRAGMA user_version = 2;
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    assert check_database(settings) is False

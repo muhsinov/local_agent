@@ -1,5 +1,4 @@
 from pathlib import Path
-import io
 import zipfile
 
 from app.api.errors import ApiError
@@ -37,14 +36,14 @@ def validate_file_signature(file_path: Path, file_type: str, settings: Settings)
         return
 
     if file_type == "docx":
-        try:
-            with zipfile.ZipFile(file_path) as archive:
-                names = set(archive.namelist())
-        except zipfile.BadZipFile as exc:
-            raise ApiError(415, "FILE_TYPE_MISMATCH", "DOCX fayl ZIP konteyner emas.") from exc
-        if "[Content_Types].xml" not in names or "word/document.xml" not in names:
-            raise ApiError(415, "FILE_TYPE_MISMATCH", "DOCX fayl tuzilmasi noto'g'ri.")
-        validate_docx_archive(file_path, settings)
+        validate_docx_archive(
+            file_path,
+            settings,
+            structural_error_code="FILE_TYPE_MISMATCH",
+            structural_error_message="DOCX fayl tuzilmasi noto'g'ri.",
+            corrupt_error_code="FILE_TYPE_MISMATCH",
+            corrupt_error_message="DOCX fayl ZIP konteyner emas.",
+        )
         return
 
     raw = file_path.read_bytes()
@@ -56,20 +55,32 @@ def validate_file_signature(file_path: Path, file_type: str, settings: Settings)
         raise ApiError(415, "FILE_TYPE_MISMATCH", "Matn fayl UTF-8 emas.") from exc
 
 
-def validate_docx_archive(file_path: Path, settings: Settings) -> None:
+def validate_docx_archive(
+    file_path: Path,
+    settings: Settings,
+    *,
+    structural_error_code: str = "INVALID_DOCX",
+    structural_error_message: str = "DOCX fayl tuzilmasi to'liq emas.",
+    corrupt_error_code: str = "INVALID_DOCX",
+    corrupt_error_message: str = "DOCX faylni ochib bo'lmadi.",
+) -> None:
     """Run DOCX ZIP safety checks before parsing."""
 
     try:
         with zipfile.ZipFile(file_path) as archive:
-            infos = archive.infolist()
-            names = {info.filename for info in infos}
-            if "[Content_Types].xml" not in names or "word/document.xml" not in names:
-                raise ApiError(422, "INVALID_DOCX", "DOCX fayl tuzilmasi to'liq emas.")
-            if len(infos) > settings.max_docx_zip_entries:
-                raise ApiError(422, "UNSAFE_DOCX_ARCHIVE", "DOCX archive juda katta.")
+            required_content_types = False
+            required_document_xml = False
             total_uncompressed = 0
-            for info in infos:
+            entry_count = 0
+            for info in archive.infolist():
+                entry_count += 1
+                if entry_count > settings.max_docx_zip_entries:
+                    raise ApiError(422, "UNSAFE_DOCX_ARCHIVE", "DOCX archive juda katta.")
                 name = info.filename
+                if name == "[Content_Types].xml":
+                    required_content_types = True
+                elif name == "word/document.xml":
+                    required_document_xml = True
                 if info.flag_bits & 0x1:
                     raise ApiError(422, "UNSAFE_DOCX_ARCHIVE", "Parol bilan himoyalangan DOCX qabul qilinmaydi.")
                 if name.startswith("/") or name.startswith("\\") or ".." in Path(name).parts or ":" in name:
@@ -85,7 +96,9 @@ def validate_docx_archive(file_path: Path, settings: Settings) -> None:
                 ratio = info.file_size / compressed if info.file_size else 0
                 if ratio > settings.max_docx_compression_ratio:
                     raise ApiError(422, "UNSAFE_DOCX_ARCHIVE", "DOCX archive siqilish nisbati xavfli.")
+            if not required_content_types or not required_document_xml:
+                raise ApiError(422, structural_error_code, structural_error_message)
     except ApiError:
         raise
     except zipfile.BadZipFile as exc:
-        raise ApiError(422, "INVALID_DOCX", "DOCX faylni ochib bo'lmadi.") from exc
+        raise ApiError(422, corrupt_error_code, corrupt_error_message) from exc
