@@ -101,10 +101,12 @@ Bu faqat model avval cache qilingan bo'lsa ishlaydi.
 - `VECTOR_INDEX_GENERATION_RETENTION`
 - `RAG_ENABLED`
 - `RAG_TOP_K`
+- `RAG_MAX_TOP_K`
 - `RAG_MAX_CONTEXT_CHARS`
 - `RAG_MAX_SOURCES`
 - `RAG_REQUIRE_SOURCES`
 - `RAG_ALLOW_FALLBACK_WITHOUT_INDEX`
+- `RAG_PROMPT_MAX_CHARS`
 
 ## API
 
@@ -131,7 +133,12 @@ Bu faqat model avval cache qilingan bo'lsa ishlaydi.
 - document content untrusted material hisoblanadi
 - prompt injection himoyasi delimiters va system prompt qoidalari bilan bajariladi
 - citation numbering deterministic `[1]`, `[2]`, ...
-- context budget character-based bo'lib, exact tokenizer emas
+- prompt budget approximate character-based bo'lib, exact tokenizer emas
+- budget priority: safety system prompt, current user message, document context, undan keyin newest history
+- history budgetdan oshsa eng eski xabarlar tushiriladi
+- context source blocklari budgetga sig'masa excerpt qisqartiriladi yoki block tashlab ketiladi
+- markdown link va image label ichidagi `[1](...)`, `![1](...)` citation deb olinmaydi
+- invalid citation normalization multiline formattingni imkon qadar saqlaydi, lekin har doim to'liq markdown parser emas
 
 ## Vector index lifecycle
 

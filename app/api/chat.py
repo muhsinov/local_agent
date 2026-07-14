@@ -13,7 +13,7 @@ from app.llm.exceptions import (
 )
 from app.rag.citation import extract_citation_numbers, normalize_citations
 from app.rag.exceptions import RagError
-from app.rag.prompt_builder import build_chat_messages
+from app.rag.prompt_builder import RAG_SYSTEM_PROMPT, build_chat_messages, compute_available_context_chars
 from app.rag.rag_service import RagService
 from app.schemas.chat import ChatRequest, ChatResponse, UsageSummary
 from app.schemas.rag import RagMetadataResponse, RagSourceResponse
@@ -55,23 +55,37 @@ async def chat(request: Request, payload: ChatRequest) -> ChatResponse:
 
     rag_enabled = settings.rag_enabled if payload.use_rag is None else payload.use_rag
     rag_service = RagService(settings, request.app.state.vector_operation_coordinator)
+    available_context_chars = 0
+    if rag_enabled:
+        try:
+            available_context_chars = compute_available_context_chars(
+                system_prompt=RAG_SYSTEM_PROMPT,
+                user_message=payload.message,
+                max_chars=settings.rag_prompt_max_chars,
+            )
+        except RagError as exc:
+            raise ApiError(exc.status_code, exc.code, exc.message) from exc
     rag_started = perf_counter()
     try:
         rag_result = await rag_service.prepare(
             query=payload.message,
             document_ids=payload.document_ids,
             use_rag=rag_enabled,
+            available_context_chars=available_context_chars,
         )
     except RagError as exc:
         raise ApiError(exc.status_code, exc.code, exc.message) from exc
     retrieval_ms = int((perf_counter() - rag_started) * 1000)
 
-    messages = build_chat_messages(
-        user_message=payload.message,
-        history=history,
-        context_text=rag_result.context.context_text if rag_result.context else None,
-        max_chars=settings.ollama_num_ctx * 4 + settings.rag_reserved_history_chars,
-    )
+    try:
+        messages = build_chat_messages(
+            user_message=payload.message,
+            history=history,
+            context_text=rag_result.context.context_text if rag_result.context else None,
+            max_chars=settings.rag_prompt_max_chars,
+        )
+    except RagError as exc:
+        raise ApiError(exc.status_code, exc.code, exc.message) from exc
 
     semaphore = request.app.state.chat_semaphore
     acquired = False

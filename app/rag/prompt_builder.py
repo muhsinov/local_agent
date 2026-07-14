@@ -1,5 +1,9 @@
+from app.rag.exceptions import RagError
 from app.llm.ollama_client import SYSTEM_PROMPT
 
+
+DOCUMENTS_PREFIX = "<documents>\n"
+DOCUMENTS_SUFFIX = "\n</documents>"
 
 RAG_SYSTEM_PROMPT = (
     "You are a local AI assistant running on the user's computer.\n"
@@ -20,6 +24,22 @@ RAG_SYSTEM_PROMPT = (
 )
 
 
+def _content_chars(messages: list[dict[str, str]]) -> int:
+    return sum(len(item["content"]) for item in messages)
+
+
+def compute_available_context_chars(
+    *,
+    system_prompt: str,
+    user_message: str,
+    max_chars: int,
+) -> int:
+    base_chars = len(system_prompt) + len(user_message) + len(DOCUMENTS_PREFIX) + len(DOCUMENTS_SUFFIX)
+    if base_chars > max_chars:
+        raise RagError(422, "RAG_PROMPT_TOO_LARGE", "Prompt budget safety prompt va foydalanuvchi xabari uchun yetarli emas.")
+    return max_chars - base_chars
+
+
 def fit_messages_to_budget(
     *,
     system_messages: list[dict[str, str]],
@@ -28,12 +48,16 @@ def fit_messages_to_budget(
     max_chars: int,
 ) -> list[dict[str, str]]:
     result = [*system_messages]
-    current_chars = sum(len(item["content"]) for item in result) + len(user_message)
+    current_chars = _content_chars(result) + len(user_message)
+    if current_chars > max_chars:
+        raise RagError(422, "RAG_PROMPT_TOO_LARGE", "Prompt budget safety prompt va foydalanuvchi xabari uchun yetarli emas.")
     trimmed_history = list(history)
-    while trimmed_history and current_chars + sum(len(item["content"]) for item in trimmed_history) > max_chars:
+    while trimmed_history and current_chars + _content_chars(trimmed_history) > max_chars:
         trimmed_history.pop(0)
     result.extend(trimmed_history)
     result.append({"role": "user", "content": user_message})
+    if _content_chars(result) > max_chars:
+        raise RagError(422, "RAG_PROMPT_TOO_LARGE", "Prompt budget limitidan oshib ketdi.")
     return result
 
 
@@ -46,7 +70,7 @@ def build_chat_messages(
 ) -> list[dict[str, str]]:
     system_messages = [{"role": "system", "content": RAG_SYSTEM_PROMPT if context_text else SYSTEM_PROMPT}]
     if context_text:
-        system_messages.append({"role": "system", "content": f"<documents>\n{context_text}\n</documents>"})
+        system_messages.append({"role": "system", "content": f"{DOCUMENTS_PREFIX}{context_text}{DOCUMENTS_SUFFIX}"})
     return fit_messages_to_budget(
         system_messages=system_messages,
         history=history,

@@ -1,5 +1,3 @@
-import time
-
 from app.api.errors import ApiError
 from app.rag.context_builder import build_rag_context
 from app.rag.exceptions import RagError
@@ -19,15 +17,22 @@ class RagService:
         query: str,
         document_ids: list[int] | None,
         use_rag: bool,
+        available_context_chars: int,
     ) -> RagPreparationResult:
         if not use_rag:
             return RagPreparationResult(enabled=False, used=False, fallback=False, context=None)
+        retrieval_top_k = min(
+            self._settings.rag_max_top_k,
+            max(self._settings.rag_top_k, self._settings.rag_max_sources),
+        )
+        if self._settings.rag_context_overlap_dedup:
+            retrieval_top_k = self._settings.rag_max_top_k
         try:
             results, generation_id, _, _ = await self._coordinator.run(
                 self._search_function,
                 self._settings,
                 query=query,
-                top_k=self._settings.rag_top_k,
+                top_k=retrieval_top_k,
                 document_ids=document_ids,
                 score_override=self._settings.rag_min_score,
                 acquire_timeout_seconds=self._settings.rag_busy_timeout_seconds,
@@ -51,7 +56,7 @@ class RagService:
 
         context = build_rag_context(
             chunks=results,
-            max_context_chars=self._settings.rag_max_context_chars,
+            max_context_chars=min(self._settings.rag_max_context_chars, available_context_chars),
             max_chunk_chars=self._settings.rag_max_chunk_chars,
             max_sources=self._settings.rag_max_sources,
             deduplicate_overlap=self._settings.rag_context_overlap_dedup,

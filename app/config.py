@@ -105,8 +105,8 @@ class Settings(BaseSettings):
     rag_include_chunk_index: bool = Field(default=True, alias="RAG_INCLUDE_CHUNK_INDEX")
     rag_citation_style: str = Field(default="brackets", alias="RAG_CITATION_STYLE")
     rag_busy_timeout_seconds: int = Field(default=10, alias="RAG_BUSY_TIMEOUT_SECONDS", ge=1, le=60)
-    rag_reserved_history_chars: int = Field(default=3000, alias="RAG_RESERVED_HISTORY_CHARS", ge=0, le=20000)
-    rag_reserved_answer_tokens: int = Field(default=512, alias="RAG_RESERVED_ANSWER_TOKENS", ge=32, le=4096)
+    rag_prompt_max_chars: int = Field(default=8000, alias="RAG_PROMPT_MAX_CHARS", ge=1000, le=50000)
+    rag_reserved_answer_tokens: int = Field(default=512, alias="RAG_RESERVED_ANSWER_TOKENS", ge=32, le=2048)
 
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -8,3 +8,6 @@
 - RAG yoqilgan/o'chirilgan rejim `use_rag` request fieldi va `RAG_ENABLED` config bilan boshqariladi.
 - Index dirty yoki unavailable bo'lsa strict mode error, aks holda fallback mumkin.
 - Hozir tool calling yo'q.
+- Prompt character budget approximate bo'lib, exact tokenizer emas; priority safety system prompt, current user message, document context, newest history tartibida ishlaydi.
+- History budgetdan oshsa eng eski xabarlar tushiriladi, context budgetdan oshsa final source excerpt qisqarishi mumkin.
+- Markdown link va image label ichidagi `[1](...)`, `![1](...)` markerlar citation emas; invalid citation normalization multiline formattingni imkon qadar saqlaydi.
