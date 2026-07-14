@@ -13,6 +13,9 @@ def write_rag_chat_audit(
     citation_count: int,
     invalid_citation_count: int,
     generation_id: str | None,
+    prompt_input_chars: int,
+    prompt_input_limit_chars: int,
+    reserved_answer_chars: int,
     status: str = "ok",
 ) -> None:
     write_audit_log(
@@ -27,5 +30,8 @@ def write_rag_chat_audit(
             "retrieval_ms": retrieval_ms,
             "citation_count": citation_count,
             "invalid_citation_count": invalid_citation_count,
+            "prompt_input_chars": prompt_input_chars,
+            "prompt_input_limit_chars": prompt_input_limit_chars,
+            "reserved_answer_chars": reserved_answer_chars,
         },
     )

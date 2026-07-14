@@ -31,7 +31,7 @@ def test_chat_rag_fallback_when_index_missing(tmp_path) -> None:
 
 
 def test_chat_returns_prompt_too_large_before_ollama(monkeypatch, tmp_path) -> None:
-    settings = build_settings(tmp_path, RAG_ENABLED=True, RAG_PROMPT_MAX_CHARS=1000)
+    settings = build_settings(tmp_path, RAG_ENABLED=True, RAG_PROMPT_MAX_CHARS=4000, RAG_RESERVED_ANSWER_TOKENS=512)
     fake_client = FakeOllamaClient()
     app = create_app(settings)
     app.state.ollama_client = fake_client
@@ -72,6 +72,20 @@ def test_chat_returns_prompt_too_large_before_ollama(monkeypatch, tmp_path) -> N
     with sqlite3.connect(settings.resolved_database_path) as connection:
         count = connection.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
     assert count == 0
+
+
+def test_non_rag_chat_respects_answer_reserve(monkeypatch, tmp_path) -> None:
+    settings = build_settings(tmp_path, RAG_ENABLED=False, RAG_PROMPT_MAX_CHARS=2200, RAG_RESERVED_ANSWER_TOKENS=512)
+    fake_client = FakeOllamaClient()
+    app = create_app(settings)
+    app.state.ollama_client = fake_client
+
+    with TestClient(app) as client:
+        response = client.post("/chat", json={"message": "Salom", "use_rag": False})
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "RAG_PROMPT_TOO_LARGE"
+    assert fake_client.captured_messages == []
 
 
 def test_chat_response_sources_match_prompt_context(monkeypatch, tmp_path) -> None:

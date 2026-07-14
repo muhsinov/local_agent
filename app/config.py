@@ -107,6 +107,7 @@ class Settings(BaseSettings):
     rag_busy_timeout_seconds: int = Field(default=10, alias="RAG_BUSY_TIMEOUT_SECONDS", ge=1, le=60)
     rag_prompt_max_chars: int = Field(default=8000, alias="RAG_PROMPT_MAX_CHARS", ge=1000, le=50000)
     rag_reserved_answer_tokens: int = Field(default=512, alias="RAG_RESERVED_ANSWER_TOKENS", ge=32, le=2048)
+    rag_chars_per_token_estimate: int = Field(default=4, alias="RAG_CHARS_PER_TOKEN_ESTIMATE", ge=1, le=8)
 
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -38,6 +38,9 @@ def write_audit_log(
             "retrieval_ms",
             "citation_count",
             "invalid_citation_count",
+            "prompt_input_chars",
+            "prompt_input_limit_chars",
+            "reserved_answer_chars",
         }
     }
     try:

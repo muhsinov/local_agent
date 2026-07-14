@@ -9,5 +9,7 @@
 - Index dirty yoki unavailable bo'lsa strict mode error, aks holda fallback mumkin.
 - Hozir tool calling yo'q.
 - Prompt character budget approximate bo'lib, exact tokenizer emas; priority safety system prompt, current user message, document context, newest history tartibida ishlaydi.
+- Default budget estimate `4 chars/token`; answer generation uchun alohida reserve ajratiladi va actual tokenizer tilga qarab farq qilishi mumkin.
+- Uzbek yoki Russian matnda estimate aniq bo'lmasligi mumkin, kerak bo'lsa konservativroq config ishlatiladi.
 - History budgetdan oshsa eng eski xabarlar tushiriladi, context budgetdan oshsa final source excerpt qisqarishi mumkin.
 - Markdown link va image label ichidagi `[1](...)`, `![1](...)` markerlar citation emas; invalid citation normalization multiline formattingni imkon qadar saqlaydi.

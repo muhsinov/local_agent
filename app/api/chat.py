@@ -5,6 +5,7 @@ from time import perf_counter
 from fastapi import APIRouter, Request
 
 from app.api.errors import ApiError
+from app.llm.ollama_client import SYSTEM_PROMPT
 from app.llm.exceptions import (
     OllamaInvalidResponseError,
     OllamaModelNotFoundError,
@@ -13,7 +14,7 @@ from app.llm.exceptions import (
 )
 from app.rag.citation import extract_citation_numbers, normalize_citations
 from app.rag.exceptions import RagError
-from app.rag.prompt_builder import RAG_SYSTEM_PROMPT, build_chat_messages, compute_available_context_chars
+from app.rag.prompt_builder import RAG_SYSTEM_PROMPT, build_chat_messages, calculate_prompt_budget
 from app.rag.rag_service import RagService
 from app.schemas.chat import ChatRequest, ChatResponse, UsageSummary
 from app.schemas.rag import RagMetadataResponse, RagSourceResponse
@@ -54,24 +55,27 @@ async def chat(request: Request, payload: ChatRequest) -> ChatResponse:
         raise _database_error() from None
 
     rag_enabled = settings.rag_enabled if payload.use_rag is None else payload.use_rag
+    system_prompt = RAG_SYSTEM_PROMPT if rag_enabled else SYSTEM_PROMPT
     rag_service = RagService(settings, request.app.state.vector_operation_coordinator)
-    available_context_chars = 0
-    if rag_enabled:
-        try:
-            available_context_chars = compute_available_context_chars(
-                system_prompt=RAG_SYSTEM_PROMPT,
-                user_message=payload.message,
-                max_chars=settings.rag_prompt_max_chars,
-            )
-        except RagError as exc:
-            raise ApiError(exc.status_code, exc.code, exc.message) from exc
+    try:
+        prompt_budget = calculate_prompt_budget(
+            system_prompt=system_prompt,
+            user_message=payload.message,
+            configured_prompt_max_chars=settings.rag_prompt_max_chars,
+            ollama_num_ctx=settings.ollama_num_ctx,
+            reserved_answer_tokens=max(settings.rag_reserved_answer_tokens, settings.ollama_num_predict),
+            chars_per_token_estimate=settings.rag_chars_per_token_estimate,
+            reserve_document_wrapper=rag_enabled,
+        )
+    except RagError as exc:
+        raise ApiError(exc.status_code, exc.code, exc.message) from exc
     rag_started = perf_counter()
     try:
         rag_result = await rag_service.prepare(
             query=payload.message,
             document_ids=payload.document_ids,
             use_rag=rag_enabled,
-            available_context_chars=available_context_chars,
+            available_context_chars=prompt_budget.available_context_chars,
         )
     except RagError as exc:
         raise ApiError(exc.status_code, exc.code, exc.message) from exc
@@ -79,10 +83,11 @@ async def chat(request: Request, payload: ChatRequest) -> ChatResponse:
 
     try:
         messages = build_chat_messages(
+            system_prompt=RAG_SYSTEM_PROMPT if rag_result.context else system_prompt,
             user_message=payload.message,
             history=history,
             context_text=rag_result.context.context_text if rag_result.context else None,
-            max_chars=settings.rag_prompt_max_chars,
+            max_chars=prompt_budget.max_input_chars,
         )
     except RagError as exc:
         raise ApiError(exc.status_code, exc.code, exc.message) from exc
@@ -144,6 +149,9 @@ async def chat(request: Request, payload: ChatRequest) -> ChatResponse:
         citation_count=len(extract_citation_numbers(normalized_answer)),
         invalid_citation_count=invalid_citations_removed,
         generation_id=rag_result.context.generation_id if rag_result.context else None,
+        prompt_input_chars=sum(len(message["content"]) for message in messages),
+        prompt_input_limit_chars=prompt_budget.max_input_chars,
+        reserved_answer_chars=prompt_budget.reserved_answer_chars,
     )
     return ChatResponse(
         conversation_id=conversation_id,

@@ -107,6 +107,8 @@ Bu faqat model avval cache qilingan bo'lsa ishlaydi.
 - `RAG_REQUIRE_SOURCES`
 - `RAG_ALLOW_FALLBACK_WITHOUT_INDEX`
 - `RAG_PROMPT_MAX_CHARS`
+- `RAG_RESERVED_ANSWER_TOKENS`
+- `RAG_CHARS_PER_TOKEN_ESTIMATE`
 
 ## API
 
@@ -134,6 +136,10 @@ Bu faqat model avval cache qilingan bo'lsa ishlaydi.
 - prompt injection himoyasi delimiters va system prompt qoidalari bilan bajariladi
 - citation numbering deterministic `[1]`, `[2]`, ...
 - prompt budget approximate character-based bo'lib, exact tokenizer emas
+- default hisob `4 chars/token` estimate bilan qilinadi
+- answer generation uchun alohida reserve joy ajratiladi
+- actual tokenizer va tilga qarab uzunlik farq qiladi, ayniqsa Uzbek/Russian matnda estimate aniq bo'lmasligi mumkin
+- konservativ xavfsizlik uchun budget configlarini kamaytirish mumkin
 - budget priority: safety system prompt, current user message, document context, undan keyin newest history
 - history budgetdan oshsa eng eski xabarlar tushiriladi
 - context source blocklari budgetga sig'masa excerpt qisqartiriladi yoki block tashlab ketiladi

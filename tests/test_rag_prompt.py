@@ -4,9 +4,10 @@ from app.rag.exceptions import RagError
 from app.rag.prompt_builder import (
     DOCUMENTS_PREFIX,
     DOCUMENTS_SUFFIX,
+    PromptBudget,
     RAG_SYSTEM_PROMPT,
     build_chat_messages,
-    compute_available_context_chars,
+    calculate_prompt_budget,
     fit_messages_to_budget,
 )
 
@@ -14,6 +15,7 @@ from app.rag.prompt_builder import (
 def test_build_chat_messages_places_context_before_history() -> None:
     max_chars = len(RAG_SYSTEM_PROMPT) + len(DOCUMENTS_PREFIX) + len("[1]\nContent:\nmatn") + len(DOCUMENTS_SUFFIX) + len("old") + len("savol")
     messages = build_chat_messages(
+        system_prompt=RAG_SYSTEM_PROMPT,
         user_message="savol",
         history=[{"role": "user", "content": "old"}],
         context_text="[1]\nContent:\nmatn",
@@ -54,25 +56,91 @@ def test_fit_messages_to_budget_drops_oldest_history_first() -> None:
     ]
 
 
-def test_compute_available_context_chars_includes_wrapper() -> None:
-    available = compute_available_context_chars(
+def test_calculate_prompt_budget_includes_wrapper_and_answer_reserve() -> None:
+    budget = calculate_prompt_budget(
         system_prompt="safe",
         user_message="user",
-        max_chars=100,
+        configured_prompt_max_chars=8000,
+        ollama_num_ctx=2048,
+        reserved_answer_tokens=512,
+        chars_per_token_estimate=4,
+        reserve_document_wrapper=True,
     )
-    assert available == 100 - len("safe") - len("user") - len(DOCUMENTS_PREFIX) - len(DOCUMENTS_SUFFIX)
+    assert budget == PromptBudget(
+        total_window_chars=8000,
+        reserved_answer_chars=2048,
+        max_input_chars=5952,
+        available_context_chars=5952 - len("safe") - len("user") - len(DOCUMENTS_PREFIX) - len(DOCUMENTS_SUFFIX),
+    )
 
 
-def test_compute_available_context_chars_raises_when_system_and_user_exceed_budget() -> None:
+def test_calculate_prompt_budget_raises_when_system_and_user_exceed_budget() -> None:
     with pytest.raises(RagError) as exc:
-        compute_available_context_chars(system_prompt="s" * 20, user_message="u" * 20, max_chars=10)
+        calculate_prompt_budget(
+            system_prompt="s" * 20,
+            user_message="u" * 20,
+            configured_prompt_max_chars=50,
+            ollama_num_ctx=20,
+            reserved_answer_tokens=10,
+            chars_per_token_estimate=4,
+        )
     assert exc.value.code == "RAG_PROMPT_TOO_LARGE"
+
+
+def test_calculate_prompt_budget_caps_to_model_context() -> None:
+    budget = calculate_prompt_budget(
+        system_prompt="safe",
+        user_message="user",
+        configured_prompt_max_chars=20000,
+        ollama_num_ctx=1024,
+        reserved_answer_tokens=128,
+        chars_per_token_estimate=4,
+    )
+    assert budget.total_window_chars == 4096
+
+
+def test_calculate_prompt_budget_uses_config_cap_when_smaller() -> None:
+    budget = calculate_prompt_budget(
+        system_prompt="safe",
+        user_message="user",
+        configured_prompt_max_chars=3000,
+        ollama_num_ctx=2048,
+        reserved_answer_tokens=128,
+        chars_per_token_estimate=4,
+    )
+    assert budget.total_window_chars == 3000
+
+
+def test_calculate_prompt_budget_non_rag_does_not_reserve_wrapper() -> None:
+    budget = calculate_prompt_budget(
+        system_prompt="safe",
+        user_message="user",
+        configured_prompt_max_chars=3000,
+        ollama_num_ctx=2048,
+        reserved_answer_tokens=128,
+        chars_per_token_estimate=4,
+        reserve_document_wrapper=False,
+    )
+    assert budget.available_context_chars == budget.max_input_chars - len("safe") - len("user")
+
+
+def test_calculate_prompt_budget_uses_larger_predict_reserve() -> None:
+    budget = calculate_prompt_budget(
+        system_prompt="safe",
+        user_message="user",
+        configured_prompt_max_chars=8000,
+        ollama_num_ctx=2048,
+        reserved_answer_tokens=700,
+        chars_per_token_estimate=4,
+    )
+    assert budget.reserved_answer_chars == 2800
 
 
 def test_build_chat_messages_respects_final_budget() -> None:
     context_text = "[1]\nContent:\nctx"
     max_chars = len(RAG_SYSTEM_PROMPT) + len(DOCUMENTS_PREFIX) + len(context_text) + len(DOCUMENTS_SUFFIX) + len("reply") + len("final")
     messages = build_chat_messages(
+        system_prompt=RAG_SYSTEM_PROMPT,
         user_message="final",
         history=[{"role": "user", "content": "old"}, {"role": "assistant", "content": "reply"}],
         context_text=context_text,

@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+
 from app.rag.exceptions import RagError
 from app.llm.ollama_client import SYSTEM_PROMPT
 
@@ -24,20 +26,43 @@ RAG_SYSTEM_PROMPT = (
 )
 
 
+@dataclass(frozen=True)
+class PromptBudget:
+    total_window_chars: int
+    reserved_answer_chars: int
+    max_input_chars: int
+    available_context_chars: int
+
+
 def _content_chars(messages: list[dict[str, str]]) -> int:
     return sum(len(item["content"]) for item in messages)
 
 
-def compute_available_context_chars(
+def calculate_prompt_budget(
     *,
     system_prompt: str,
     user_message: str,
-    max_chars: int,
-) -> int:
-    base_chars = len(system_prompt) + len(user_message) + len(DOCUMENTS_PREFIX) + len(DOCUMENTS_SUFFIX)
-    if base_chars > max_chars:
+    configured_prompt_max_chars: int,
+    ollama_num_ctx: int,
+    reserved_answer_tokens: int,
+    chars_per_token_estimate: int,
+    reserve_document_wrapper: bool = False,
+) -> PromptBudget:
+    effective_reserved_answer_tokens = max(reserved_answer_tokens, 0)
+    reserved_answer_chars = effective_reserved_answer_tokens * chars_per_token_estimate
+    model_context_chars = ollama_num_ctx * chars_per_token_estimate
+    total_window_chars = min(configured_prompt_max_chars, model_context_chars)
+    max_input_chars = total_window_chars - reserved_answer_chars
+    wrapper_chars = len(DOCUMENTS_PREFIX) + len(DOCUMENTS_SUFFIX) if reserve_document_wrapper else 0
+    available_context_chars = max_input_chars - len(system_prompt) - len(user_message) - wrapper_chars
+    if available_context_chars < 0:
         raise RagError(422, "RAG_PROMPT_TOO_LARGE", "Prompt budget safety prompt va foydalanuvchi xabari uchun yetarli emas.")
-    return max_chars - base_chars
+    return PromptBudget(
+        total_window_chars=total_window_chars,
+        reserved_answer_chars=reserved_answer_chars,
+        max_input_chars=max_input_chars,
+        available_context_chars=available_context_chars,
+    )
 
 
 def fit_messages_to_budget(
@@ -63,12 +88,13 @@ def fit_messages_to_budget(
 
 def build_chat_messages(
     *,
+    system_prompt: str,
     user_message: str,
     history: list[dict[str, str]],
     context_text: str | None,
     max_chars: int,
 ) -> list[dict[str, str]]:
-    system_messages = [{"role": "system", "content": RAG_SYSTEM_PROMPT if context_text else SYSTEM_PROMPT}]
+    system_messages = [{"role": "system", "content": system_prompt}]
     if context_text:
         system_messages.append({"role": "system", "content": f"{DOCUMENTS_PREFIX}{context_text}{DOCUMENTS_SUFFIX}"})
     return fit_messages_to_budget(
