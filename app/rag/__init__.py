@@ -1,1 +1,1 @@
-"""RAG-related services for deterministic chunking and vector indexing."""
+"""RAG-related services for retrieval, prompt building, and grounded chat."""

@@ -10,9 +10,9 @@
     <main class="layout">
         <section class="hero">
             <div>
-                <p class="eyebrow">Phase 4 vector indexing</p>
+                <p class="eyebrow">Phase 5 grounded RAG chat</p>
                 <h1>Local Agent Demo</h1>
-                <p class="subtitle">Deterministic chunking, multilingual embeddings va semantic search tayyor. Chat hali RAG ishlatmaydi.</p>
+                <p class="subtitle">Chat endi document context, citations va fallback behavior bilan ishlaydi. Tool calling hali yo'q.</p>
             </div>
             <div class="status-grid">
                 <article class="status-card">
@@ -33,11 +33,21 @@
         <section class="chat-shell">
             <div class="chat-header">
                 <h2>Chat</h2>
-                <p id="chat-status">Chat hali semantic search natijalarini promptga ulmaydi.</p>
+                <p id="chat-status">RAG holati yuklanmoqda.</p>
+            </div>
+            <div class="chat-options">
+                <label class="inline-option">
+                    <input id="use-rag-checkbox" type="checkbox" checked>
+                    <span>Use documents</span>
+                </label>
+                <label class="inline-option grow">
+                    <span>Document IDs (ixtiyoriy)</span>
+                    <input id="chat-document-ids" type="text" placeholder="1,2,3">
+                </label>
             </div>
             <div id="chat-history" class="chat-history" aria-live="polite">
                 <article class="message system">
-                    <p>Assalomu alaykum. Bu panel faqat lokal chat uchun. RAG Phase 5 da ulanadi.</p>
+                    <p>Assalomu alaykum. Hujjatlardan foydalansangiz javobda source citation ko'rsatiladi.</p>
                 </article>
             </div>
             <form id="chat-form" class="chat-form">
@@ -48,6 +58,14 @@
                     <button id="send-button" type="submit">Send</button>
                 </div>
             </form>
+            <article class="rag-panel">
+                <div class="preview-header">
+                    <h3>RAG Sources</h3>
+                    <span id="rag-meta"></span>
+                </div>
+                <p id="rag-warning" class="muted-line">Hozircha source tanlanmagan.</p>
+                <div id="rag-sources" class="search-results"></div>
+            </article>
         </section>
 
         <section class="documents-shell">
@@ -78,31 +96,6 @@
                 </div>
                 <pre id="document-preview" class="document-preview">Preview hali tanlanmagan.</pre>
             </article>
-        </section>
-
-        <section class="documents-shell">
-            <div class="documents-header">
-                <div>
-                    <h2>Semantic Search</h2>
-                    <p>Global index bo'yicha qidiradi. Internal path ko'rsatilmaydi.</p>
-                </div>
-                <span id="search-status" class="document-status">Ready</span>
-            </div>
-            <form id="search-form" class="search-form">
-                <textarea id="search-query" rows="3" placeholder="Masalan: Agent xavfsizligi qanday ta'minlanadi?"></textarea>
-                <div class="search-controls">
-                    <label>
-                        <span>Top K</span>
-                        <input id="search-top-k" type="number" min="1" max="20" value="4">
-                    </label>
-                    <label class="search-filter">
-                        <span>Document IDs (ixtiyoriy)</span>
-                        <input id="search-document-ids" type="text" placeholder="1,2,3">
-                    </label>
-                    <button id="search-button" type="submit">Search</button>
-                </div>
-            </form>
-            <div id="search-results" class="search-results"></div>
         </section>
     </main>
     <script src="/static/app.js"></script>

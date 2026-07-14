@@ -91,6 +91,22 @@ class Settings(BaseSettings):
         ge=1,
         le=10,
     )
+    rag_enabled: bool = Field(default=True, alias="RAG_ENABLED")
+    rag_top_k: int = Field(default=4, alias="RAG_TOP_K", ge=1, le=10)
+    rag_max_top_k: int = Field(default=8, alias="RAG_MAX_TOP_K", ge=1, le=20)
+    rag_min_score: float = Field(default=0.20, alias="RAG_MIN_SCORE", ge=-1.0, le=1.0)
+    rag_max_context_chars: int = Field(default=6000, alias="RAG_MAX_CONTEXT_CHARS", ge=500, le=20000)
+    rag_max_chunk_chars: int = Field(default=1800, alias="RAG_MAX_CHUNK_CHARS", ge=200, le=4000)
+    rag_max_sources: int = Field(default=4, alias="RAG_MAX_SOURCES", ge=1, le=10)
+    rag_context_overlap_dedup: bool = Field(default=True, alias="RAG_CONTEXT_OVERLAP_DEDUP")
+    rag_require_sources: bool = Field(default=False, alias="RAG_REQUIRE_SOURCES")
+    rag_allow_fallback_without_index: bool = Field(default=True, alias="RAG_ALLOW_FALLBACK_WITHOUT_INDEX")
+    rag_include_file_name: bool = Field(default=True, alias="RAG_INCLUDE_FILE_NAME")
+    rag_include_chunk_index: bool = Field(default=True, alias="RAG_INCLUDE_CHUNK_INDEX")
+    rag_citation_style: str = Field(default="brackets", alias="RAG_CITATION_STYLE")
+    rag_busy_timeout_seconds: int = Field(default=10, alias="RAG_BUSY_TIMEOUT_SECONDS", ge=1, le=60)
+    rag_reserved_history_chars: int = Field(default=3000, alias="RAG_RESERVED_HISTORY_CHARS", ge=0, le=20000)
+    rag_reserved_answer_tokens: int = Field(default=512, alias="RAG_RESERVED_ANSWER_TOKENS", ge=32, le=4096)
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -126,6 +142,14 @@ class Settings(BaseSettings):
             raise ValueError("EMBEDDING_DEVICE faqat cpu bo'lishi mumkin.")
         return normalized
 
+    @field_validator("rag_citation_style", mode="after")
+    @classmethod
+    def validate_rag_citation_style(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized != "brackets":
+            raise ValueError("RAG_CITATION_STYLE faqat brackets bo'lishi mumkin.")
+        return normalized
+
     @model_validator(mode="after")
     def validate_related_values(self) -> "Settings":
         if self.chunk_overlap_chars >= self.chunk_size_chars:
@@ -134,6 +158,10 @@ class Settings(BaseSettings):
             raise ValueError("CHUNK_MIN_CHARS CHUNK_SIZE_CHARS dan katta bo'lishi mumkin emas.")
         if self.vector_search_top_k > self.vector_search_max_k:
             raise ValueError("VECTOR_SEARCH_TOP_K VECTOR_SEARCH_MAX_K dan katta bo'lishi mumkin emas.")
+        if self.rag_top_k > self.rag_max_top_k:
+            raise ValueError("RAG_TOP_K RAG_MAX_TOP_K dan katta bo'lishi mumkin emas.")
+        if self.rag_max_sources > self.rag_max_top_k:
+            raise ValueError("RAG_MAX_SOURCES RAG_MAX_TOP_K dan katta bo'lishi mumkin emas.")
         return self
 
     @property

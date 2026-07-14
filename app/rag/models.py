@@ -49,3 +49,35 @@ class VectorIndexManifest:
     document_count: int
     chunk_count: int
     created_at: str
+
+
+@dataclass(frozen=True)
+class RagSource:
+    citation: str
+    chunk_id: int
+    document_id: int
+    file_name: str
+    chunk_index: int
+    score: float
+    start_char: int
+    end_char: int
+    excerpt: str
+
+
+@dataclass(frozen=True)
+class RagContext:
+    context_text: str
+    sources: list[RagSource]
+    generation_id: str | None
+    retrieved_count: int
+    context_chars: int
+
+
+@dataclass(frozen=True)
+class RagPreparationResult:
+    enabled: bool
+    used: bool
+    fallback: bool
+    context: RagContext | None
+    citations_present: bool = False
+    invalid_citations_removed: int = 0

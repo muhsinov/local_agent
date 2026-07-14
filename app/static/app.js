@@ -4,6 +4,11 @@ const vectorStatusSummary = document.getElementById("vector-status-summary");
 const vectorStatusMeta = document.getElementById("vector-status-meta");
 const vectorStatusDetail = document.getElementById("vector-status-detail");
 const chatStatus = document.getElementById("chat-status");
+const ragMeta = document.getElementById("rag-meta");
+const ragWarning = document.getElementById("rag-warning");
+const ragSources = document.getElementById("rag-sources");
+const useRagCheckbox = document.getElementById("use-rag-checkbox");
+const chatDocumentIds = document.getElementById("chat-document-ids");
 const chatForm = document.getElementById("chat-form");
 const messageInput = document.getElementById("message-input");
 const chatHistory = document.getElementById("chat-history");
@@ -17,13 +22,6 @@ const documentStatus = document.getElementById("document-status");
 const documentList = document.getElementById("document-list");
 const documentPreview = document.getElementById("document-preview");
 const previewMeta = document.getElementById("preview-meta");
-const searchForm = document.getElementById("search-form");
-const searchQuery = document.getElementById("search-query");
-const searchTopK = document.getElementById("search-top-k");
-const searchDocumentIds = document.getElementById("search-document-ids");
-const searchButton = document.getElementById("search-button");
-const searchStatus = document.getElementById("search-status");
-const searchResults = document.getElementById("search-results");
 
 let conversationId = null;
 
@@ -37,6 +35,25 @@ async function safeJson(response) {
 
 function apiMessage(payload, fallback) {
   return payload?.detail?.message || fallback;
+}
+
+function parseDocumentIds(rawValue) {
+  const raw = rawValue.trim();
+  if (!raw) {
+    return null;
+  }
+  const ids = raw
+    .split(",")
+    .map((part) => Number.parseInt(part.trim(), 10))
+    .filter((value) => Number.isInteger(value) && value > 0);
+  return Array.from(new Set(ids));
+}
+
+function shortGeneration(value) {
+  if (!value) {
+    return "none";
+  }
+  return value.length > 24 ? `${value.slice(0, 24)}...` : value;
 }
 
 async function loadHealthStatus() {
@@ -55,7 +72,6 @@ async function loadModelStatus() {
     const payload = await safeJson(response);
     if (!payload) {
       modelStatus.textContent = "backend error";
-      chatStatus.textContent = "Model status javobi noto'g'ri formatda keldi.";
       return;
     }
     if (response.ok && payload.installed) {
@@ -64,7 +80,6 @@ async function loadModelStatus() {
     }
     if (!response.ok) {
       modelStatus.textContent = "backend error";
-      chatStatus.textContent = apiMessage(payload, "Model statusni yuklab bo'lmadi.");
       return;
     }
     if (payload.ollama === "unreachable") {
@@ -90,7 +105,42 @@ function appendMessage(content, role) {
 function setLoadingState(isLoading) {
   sendButton.disabled = isLoading;
   messageInput.disabled = isLoading;
+  useRagCheckbox.disabled = isLoading;
+  chatDocumentIds.disabled = isLoading;
   loadingIndicator.hidden = !isLoading;
+}
+
+function renderRagSources(sources) {
+  ragSources.textContent = "";
+  if (!sources.length) {
+    const empty = document.createElement("p");
+    empty.textContent = "Source topilmadi.";
+    ragSources.appendChild(empty);
+    return;
+  }
+  sources.forEach((source) => {
+    const card = document.createElement("article");
+    card.className = "search-result";
+    const header = document.createElement("div");
+    header.className = "result-header";
+    const title = document.createElement("strong");
+    title.textContent = `${source.citation} ${source.file_name} - chunk #${source.chunk_index}`;
+    const score = document.createElement("span");
+    score.className = "result-score";
+    score.textContent = `score=${source.score.toFixed(3)} - ${source.start_char}-${source.end_char}`;
+    const text = document.createElement("pre");
+    text.className = "result-text";
+    text.textContent = source.excerpt;
+    const trust = document.createElement("p");
+    trust.className = "muted-line";
+    trust.textContent = "Untrusted document content";
+    header.appendChild(title);
+    header.appendChild(score);
+    card.appendChild(header);
+    card.appendChild(text);
+    card.appendChild(trust);
+    ragSources.appendChild(card);
+  });
 }
 
 async function submitChat() {
@@ -105,7 +155,12 @@ async function submitChat() {
     const response = await fetch("/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: content, conversation_id: conversationId }),
+      body: JSON.stringify({
+        message: content,
+        conversation_id: conversationId,
+        use_rag: useRagCheckbox.checked,
+        document_ids: parseDocumentIds(chatDocumentIds.value),
+      }),
     });
     const payload = await safeJson(response);
     if (!payload) {
@@ -118,6 +173,18 @@ async function submitChat() {
     }
     conversationId = payload.conversation_id;
     appendMessage(payload.answer, "system");
+    chatStatus.textContent = payload.rag.used
+      ? "Javob hujjatlar bilan grounded qilindi."
+      : payload.rag.fallback
+        ? "Javob hujjatlarsiz yaratildi."
+        : "RAG o'chirilgan yoki ishlatilmadi.";
+    ragMeta.textContent = `gen=${shortGeneration(payload.rag.generation_id)} • chars=${payload.rag.context_chars}`;
+    ragWarning.textContent = payload.rag.fallback
+      ? "Fallback ishladi. Dirty index bo'lsa rebuild qiling."
+      : payload.rag.used
+        ? "Citation markerlari answer ichida bo'lishi mumkin."
+        : "Source ishlatilmagan.";
+    renderRagSources(payload.sources || []);
   } catch (error) {
     appendMessage("Backend bilan bog'lanib bo'lmadi.", "system");
   } finally {
@@ -134,13 +201,6 @@ function formatBytes(value) {
     return `${(value / 1024).toFixed(1)} KB`;
   }
   return `${(value / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function shortGeneration(value) {
-  if (!value) {
-    return "none";
-  }
-  return value.length > 24 ? `${value.slice(0, 24)}...` : value;
 }
 
 function setDocumentStatus(message) {
@@ -184,41 +244,27 @@ async function refreshDocuments() {
     payload.items.forEach((item) => {
       const card = document.createElement("article");
       card.className = "document-card";
-
       const title = document.createElement("strong");
       title.textContent = item.file_name;
-
       const meta = document.createElement("p");
-      meta.textContent = `${item.file_type.toUpperCase()} • ${formatBytes(item.size_bytes)} • status=${item.status} • chars=${item.char_count}`;
-
+      meta.textContent = `${item.file_type.toUpperCase()} - ${formatBytes(item.size_bytes)} - status=${item.status} - chars=${item.char_count}`;
       const extra = document.createElement("p");
-      extra.textContent = `pages=${item.page_count ?? "-"} • indexed=${item.indexed} • warning=${item.warning_code ?? "none"}`;
-
+      extra.textContent = `pages=${item.page_count ?? "-"} - indexed=${item.indexed} - warning=${item.warning_code ?? "none"}`;
       const actions = document.createElement("div");
       actions.className = "document-actions";
-
       const previewButton = document.createElement("button");
       previewButton.type = "button";
       previewButton.textContent = "Preview";
-      previewButton.addEventListener("click", async () => {
-        await previewDocument(item.id);
-      });
-
+      previewButton.addEventListener("click", async () => previewDocument(item.id));
       const indexButton = document.createElement("button");
       indexButton.type = "button";
       indexButton.textContent = "Index";
       indexButton.disabled = item.status !== "ready" || item.char_count <= 0;
-      indexButton.addEventListener("click", async () => {
-        await indexDocument(item.id, item.file_name);
-      });
-
+      indexButton.addEventListener("click", async () => indexDocument(item.id, item.file_name));
       const deleteButton = document.createElement("button");
       deleteButton.type = "button";
       deleteButton.textContent = "Delete";
-      deleteButton.addEventListener("click", async () => {
-        await deleteDocument(item.id, item.file_name);
-      });
-
+      deleteButton.addEventListener("click", async () => deleteDocument(item.id, item.file_name));
       actions.appendChild(previewButton);
       actions.appendChild(indexButton);
       actions.appendChild(deleteButton);
@@ -328,94 +374,6 @@ async function indexDocument(documentId, fileName) {
   }
 }
 
-function parseDocumentIds() {
-  const raw = searchDocumentIds.value.trim();
-  if (!raw) {
-    return null;
-  }
-  const ids = raw
-    .split(",")
-    .map((part) => Number.parseInt(part.trim(), 10))
-    .filter((value) => Number.isInteger(value) && value > 0);
-  return Array.from(new Set(ids));
-}
-
-function renderSearchResults(items) {
-  searchResults.textContent = "";
-  if (!items.length) {
-    const empty = document.createElement("p");
-    empty.textContent = "Natija topilmadi.";
-    searchResults.appendChild(empty);
-    return;
-  }
-  items.forEach((item) => {
-    const card = document.createElement("article");
-    card.className = "search-result";
-
-    const header = document.createElement("div");
-    header.className = "result-header";
-
-    const title = document.createElement("strong");
-    title.textContent = `${item.file_name} • chunk #${item.chunk_index}`;
-
-    const score = document.createElement("span");
-    score.className = "result-score";
-    score.textContent = `score=${item.score.toFixed(3)} • ${item.start_char}-${item.end_char}`;
-
-    const text = document.createElement("pre");
-    text.className = "result-text";
-    text.textContent = item.text;
-
-    header.appendChild(title);
-    header.appendChild(score);
-    card.appendChild(header);
-    card.appendChild(text);
-    searchResults.appendChild(card);
-  });
-}
-
-async function runSearch(event) {
-  event.preventDefault();
-  const query = searchQuery.value.trim();
-  if (!query) {
-    searchStatus.textContent = "Query bo'sh.";
-    return;
-  }
-  searchButton.disabled = true;
-  searchQuery.disabled = true;
-  searchTopK.disabled = true;
-  searchDocumentIds.disabled = true;
-  searchStatus.textContent = "Qidirilmoqda...";
-  try {
-    const response = await fetch("/vector-search", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        query,
-        top_k: Number.parseInt(searchTopK.value, 10) || 4,
-        document_ids: parseDocumentIds(),
-      }),
-    });
-    const payload = await safeJson(response);
-    if (!payload || !response.ok) {
-      searchStatus.textContent = apiMessage(
-        payload,
-        "Semantic search bajarilmadi. Model tayyor bo'lmasa .\\scripts\\prepare_embeddings.ps1 dan foydalaning.",
-      );
-      return;
-    }
-    searchStatus.textContent = `Ready • ${payload.execution_time_ms} ms • gen=${shortGeneration(payload.generation_id)}`;
-    renderSearchResults(payload.results);
-  } catch (error) {
-    searchStatus.textContent = "Semantic search vaqtida backend bilan bog'lanib bo'lmadi.";
-  } finally {
-    searchButton.disabled = false;
-    searchQuery.disabled = false;
-    searchTopK.disabled = false;
-    searchDocumentIds.disabled = false;
-  }
-}
-
 chatForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   await submitChat();
@@ -430,7 +388,6 @@ messageInput.addEventListener("keydown", async (event) => {
 
 documentForm.addEventListener("submit", uploadDocument);
 rebuildIndexButton.addEventListener("click", rebuildIndex);
-searchForm.addEventListener("submit", runSearch);
 
 loadHealthStatus();
 loadModelStatus();

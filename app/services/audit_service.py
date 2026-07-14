@@ -34,6 +34,10 @@ def write_audit_log(
             "top_k",
             "filtered_document_count",
             "execution_time_ms",
+            "context_chars",
+            "retrieval_ms",
+            "citation_count",
+            "invalid_citation_count",
         }
     }
     try:

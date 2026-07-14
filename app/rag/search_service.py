@@ -17,6 +17,7 @@ def semantic_search(
     top_k: int,
     document_ids: list[int] | None = None,
     embedding_model: EmbeddingModel | None = None,
+    score_override: float | None = None,
 ) -> tuple[list[RetrievedChunk], str, str, int]:
     normalized_query = query.strip()
     if not normalized_query:
@@ -59,6 +60,7 @@ def semantic_search(
         allowed_documents = sorted(set(document_ids or []))
         current_k = min(max(top_k, 1), settings.vector_search_max_k, max(state.chunk_count, 1))
         max_k = max(state.chunk_count, 1)
+        min_score = settings.vector_min_score if score_override is None else score_override
 
         while current_k <= max_k:
             batch = FaissStore().search(index, query_vector, current_k)
@@ -68,7 +70,7 @@ def semantic_search(
                 if chunk_id in seen_batch:
                     continue
                 seen_batch.add(chunk_id)
-                if score < settings.vector_min_score:
+                if score < min_score:
                     continue
                 filtered.append((chunk_id, score))
 

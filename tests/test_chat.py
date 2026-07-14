@@ -37,6 +37,7 @@ def test_chat_creates_new_conversation_and_returns_response(tmp_path) -> None:
     assert payload["sources"] == []
     assert payload["tool_calls"] == []
     assert payload["usage"] == {"prompt_tokens": 25, "completion_tokens": 42}
+    assert payload["rag"]["fallback"] is True
 
 
 def test_chat_writes_user_and_assistant_messages_to_sqlite(tmp_path) -> None:

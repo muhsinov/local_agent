@@ -157,6 +157,23 @@ h1 {
   gap: 12px;
 }
 
+.chat-options {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 10px 0 16px;
+}
+
+.inline-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.inline-option.grow {
+  flex: 1 1 240px;
+}
+
 .document-status {
   color: var(--muted);
 }
@@ -176,7 +193,8 @@ h1 {
 }
 
 .preview-shell,
-.vector-shell {
+.vector-shell,
+.rag-panel {
   margin-top: 16px;
   padding: 16px;
 }

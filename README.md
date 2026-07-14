@@ -1,10 +1,10 @@
 # Local Agent Demo
 
-`Local Agent Demo` Windows 10 va Python 3.11 uchun Docker'siz ishlaydigan lokal AI assistant poydevori. Hozir FastAPI backend, Ollama chat, SQLite conversation storage, xavfsiz document upload, isolated extraction, deterministic chunking, multilingual embeddings, FAISS indexing va semantic search mavjud.
+`Local Agent Demo` Windows 10 va Python 3.11 uchun Docker'siz ishlaydigan lokal AI assistant poydevori. Hozir FastAPI backend, Ollama chat, SQLite conversation storage, xavfsiz document upload, isolated extraction, deterministic chunking, multilingual embeddings, FAISS indexing, semantic search va grounded RAG chat mavjud.
 
 Primary specification: [TZ.md](TZ.md)
 
-## Phase 4 imkoniyatlari
+## Phase 5 imkoniyatlari
 
 - document upload, preview va delete
 - deterministic chunking
@@ -12,9 +12,12 @@ Primary specification: [TZ.md](TZ.md)
 - FAISS cosine search: `IndexIDMap2(IndexFlatIP)`
 - manual index rebuild va status
 - semantic search
+- grounded RAG chat
+- source citations
+- fallback behavior va strict mode
 - generation artifact lifecycle va startup recovery
 
-`/chat` hali RAG context ishlatmaydi.
+`/chat` endi ixtiyoriy RAG context ishlatadi. Tool calling hali yo'q.
 
 ## Dependency versiyalari
 
@@ -96,6 +99,12 @@ Bu faqat model avval cache qilingan bo'lsa ishlaydi.
 - `VECTOR_INDEX_DIRECTORY=data/vector_store`
 - `VECTOR_INDEX_BUSY_TIMEOUT_SECONDS`
 - `VECTOR_INDEX_GENERATION_RETENTION`
+- `RAG_ENABLED`
+- `RAG_TOP_K`
+- `RAG_MAX_CONTEXT_CHARS`
+- `RAG_MAX_SOURCES`
+- `RAG_REQUIRE_SOURCES`
+- `RAG_ALLOW_FALLBACK_WITHOUT_INDEX`
 
 ## API
 
@@ -111,6 +120,18 @@ Bu faqat model avval cache qilingan bo'lsa ishlaydi.
 - `POST /vector-index/rebuild`
 - `GET /vector-index/status`
 - `POST /vector-search`
+- `POST /chat` with `use_rag` and optional `document_ids`
+
+## RAG chat
+
+- frontenddagi `Use documents` checkbox retrievalni yoqadi yoki o'chiradi
+- successful RAG javoblarda source citations va source cards qaytadi
+- dirty yoki empty index holatida fallback allowed bo'lsa oddiy chat davom etadi
+- strict mode (`RAG_REQUIRE_SOURCES=true`) fallback o'rniga error qaytaradi
+- document content untrusted material hisoblanadi
+- prompt injection himoyasi delimiters va system prompt qoidalari bilan bajariladi
+- citation numbering deterministic `[1]`, `[2]`, ...
+- context budget character-based bo'lib, exact tokenizer emas
 
 ## Vector index lifecycle
 
@@ -129,7 +150,7 @@ Bu faqat model avval cache qilingan bo'lsa ishlaydi.
 
 ## Hozirgi cheklovlar
 
-- `/chat` hali semantic search yoki document chunklarni promptga ulmaydi
+- `/chat` RAG ishlatsa ham tool calling qilmaydi
 - background indexing yo'q
 - reranker yo'q
 - tool calling yo'q
