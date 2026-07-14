@@ -1,19 +1,20 @@
 # Local Agent Demo
 
-`Local Agent Demo` Windows 10 va Python 3.11 uchun Docker'siz ishlaydigan lokal AI assistant poydevori. Hozir FastAPI backend, Ollama chat, SQLite conversation storage, xavfsiz document upload va isolated text extraction mavjud.
+`Local Agent Demo` Windows 10 va Python 3.11 uchun Docker'siz ishlaydigan lokal AI assistant poydevori. Hozir FastAPI backend, Ollama chat, SQLite conversation storage, xavfsiz document upload, isolated extraction, deterministic chunking, multilingual embeddings, FAISS indexing va semantic search mavjud.
 
 Primary specification: [TZ.md](TZ.md)
 
-## Hozirgi imkoniyatlar
+## Phase 4 imkoniyatlari
 
-- `/health`
-- `/model/status`
-- `/chat`
-- `/documents/upload`
-- `/documents`
-- `/documents/{id}`
-- `/documents/{id}/text`
-- `DELETE /documents/{id}?confirm=true`
+- document upload, preview va delete
+- deterministic chunking
+- multilingual embedding modeli: `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`
+- FAISS cosine search: `IndexIDMap2(IndexFlatIP)`
+- manual index rebuild va status
+- semantic search
+- generation artifact lifecycle va startup recovery
+
+`/chat` hali RAG context ishlatmaydi.
 
 ## Dependency versiyalari
 
@@ -28,13 +29,16 @@ Primary specification: [TZ.md](TZ.md)
 - `pypdf==6.14.2`
 - `python-docx==1.2.0`
 - `psutil==6.1.1`
+- `sentence-transformers==5.6.0`
+- `faiss-cpu==1.14.3`
 
 ## Talablar
 
 - Windows 10 yoki yangi
 - Python 3.11+
 - Ollama ixtiyoriy, lekin chat uchun kerak
-- Tavsiya etilgan model: `qwen3:1.7b`
+- embedding model cache uchun disk joy
+- 8 GB RAM tavsiya etiladi
 
 ## Setup
 
@@ -48,16 +52,24 @@ Execution policy muammosi bo'lsa:
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ```
 
+## Embedding model tayyorlash
+
+```powershell
+.\scripts\prepare_embeddings.ps1
+```
+
+Offline mode uchun:
+
+```env
+EMBEDDING_LOCAL_FILES_ONLY=true
+```
+
+Bu faqat model avval cache qilingan bo'lsa ishlaydi.
+
 ## Ollama
 
 ```powershell
 .\scripts\prepare_ollama.ps1
-```
-
-Qo'lda:
-
-```powershell
-ollama pull qwen3:1.7b
 ```
 
 ## Start
@@ -72,80 +84,68 @@ ollama pull qwen3:1.7b
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-## Supported document formatlar
+## Muhim config
 
-- `.pdf`
-- `.docx`
-- `.txt`
-- `.md`
-
-Qo'llab-quvvatlanmaydi: `.doc`, `.rtf`, `.odt`, `.html`, executable fayllar, noto'g'ri signature'li soxta fayllar.
-
-## Document limitlar
-
-- maksimal fayl hajmi: `MAX_FILE_SIZE_MB`
-- upload chunk: `UPLOAD_CHUNK_SIZE_KB`
-- PDF sahifa limiti: `MAX_PDF_PAGES`
-- PDF page content limiti: `MAX_PDF_PAGE_CONTENT_MB`
-- extracted text limiti: `MAX_EXTRACTED_CHARS`
-- DOCX archive limitlari: zip entry count, uncompressed size, compression ratio
-- extraction timeout: `DOCUMENT_EXTRACTION_TIMEOUT_SECONDS`
-- extraction memory limiti: `DOCUMENT_EXTRACTION_MEMORY_MB`
-- scanned PDF uchun OCR yo'q
+- `CHUNK_SIZE_CHARS`
+- `CHUNK_OVERLAP_CHARS`
+- `CHUNK_MIN_CHARS`
+- `MAX_CHUNKS_PER_DOCUMENT`
+- `VECTOR_SEARCH_TOP_K`
+- `VECTOR_SEARCH_MAX_K`
+- `VECTOR_MIN_SCORE`
+- `VECTOR_INDEX_DIRECTORY=data/vector_store`
+- `VECTOR_INDEX_BUSY_TIMEOUT_SECONDS`
+- `VECTOR_INDEX_GENERATION_RETENTION`
 
 ## API
 
-- App: `http://127.0.0.1:8000/`
-- Health: `http://127.0.0.1:8000/health`
-- Model status: `http://127.0.0.1:8000/model/status`
-- Chat: `http://127.0.0.1:8000/chat`
-- Upload: `POST /documents/upload`
-- List: `GET /documents?limit=50&offset=0`
-- Metadata: `GET /documents/{id}`
-- Preview: `GET /documents/{id}/text?limit=5000`
-- Delete: `DELETE /documents/{id}?confirm=true`
+- `GET /health`
+- `GET /model/status`
+- `POST /chat`
+- `POST /documents/upload`
+- `GET /documents`
+- `GET /documents/{id}`
+- `GET /documents/{id}/text`
+- `DELETE /documents/{id}?confirm=true`
+- `POST /documents/{id}/index`
+- `POST /vector-index/rebuild`
+- `GET /vector-index/status`
+- `POST /vector-search`
 
-Windows PowerShell 5.1 `Invoke-RestMethod -Form` qo'llamasa:
+## Vector index lifecycle
 
-```powershell
-curl.exe -F "file=@sample.txt" http://127.0.0.1:8000/documents/upload
-```
-
-## Hozirgi cheklovlar
-
-- chat hali upload qilingan hujjatlarni ishlatmaydi
-- RAG keyingi bosqich
-- embeddings yo'q
-- FAISS yo'q
-- tool calling yo'q
-- document extraction bir vaqtning o'zida faqat bitta request
-- extraction spawned subprocess ichida bajariladi
-- chat bir vaqtning o'zida faqat bitta request
+- artifactlar `data/vector_store/generations/<generation-id>/` ichida saqlanadi
+- generation ichida `index.faiss` va `manifest.json` bo'ladi
+- rebuild vaqtida avval `.building` katalog ishlatiladi
+- upload yoki delete'dan keyin index `dirty=1` bo'lishi mumkin
+- dirty holatda semantic search ishlamaydi, rebuild kerak
 
 ## Storage
 
 - raw upload fayllar: `data/uploads`
 - extracted text fayllar: `data/extracted`
-- bu fayllar Git'ga kirmaydi
-- API response'larda internal path yoki absolute Windows path qaytarilmaydi
+- vector artifactlar: `data/vector_store`
+- Hugging Face cache repository ichiga kirmaydi
+
+## Hozirgi cheklovlar
+
+- `/chat` hali semantic search yoki document chunklarni promptga ulmaydi
+- background indexing yo'q
+- reranker yo'q
+- tool calling yo'q
+- advanced vector DB yo'q
+- scanned PDF uchun OCR yo'q
 
 ## Common errors
 
-- `FILE_TOO_LARGE`
-- `UNSUPPORTED_FILE_TYPE`
-- `FILE_TYPE_MISMATCH`
-- `INVALID_TEXT_ENCODING`
-- `INVALID_PDF`
-- `PDF_ENCRYPTED`
-- `UNSAFE_DOCX_ARCHIVE`
-- `DOCUMENT_DUPLICATE`
-- `DOCUMENT_STORAGE_ERROR`
-- `DOCUMENT_PROCESSOR_BUSY`
-- `DOCUMENT_EXTRACTION_TIMEOUT`
-- `DOCUMENT_EXTRACTION_MEMORY_LIMIT`
-- `DOCUMENT_PROCESSING_ERROR`
-- `CONFIRMATION_REQUIRED`
-
-## Eslatma
-
-Upload qilingan hujjatlar hozircha faqat saqlanadi, extract qilinadi, preview qilinadi va o'chiriladi. Ular `/chat` promptiga ulanmagan.
+- `DOCUMENT_HAS_NO_TEXT`
+- `DOCUMENT_CHUNK_LIMIT_EXCEEDED`
+- `NO_INDEXABLE_DOCUMENTS`
+- `VECTOR_INDEX_EMPTY`
+- `VECTOR_INDEX_NOT_READY`
+- `VECTOR_INDEX_CORRUPT`
+- `VECTOR_INDEX_BUSY`
+- `VECTOR_SEARCH_INVALID_QUERY`
+- `EMBEDDING_MODEL_UNAVAILABLE`
+- `EMBEDDING_MODEL_DIMENSION_MISMATCH`
+- `EMBEDDING_INVALID_RESPONSE`

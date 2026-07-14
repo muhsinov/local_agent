@@ -1,14 +1,14 @@
 :root {
   color-scheme: light;
-  --bg: #f4efe6;
-  --panel: rgba(255, 252, 246, 0.9);
-  --panel-strong: #fffaf2;
-  --line: #d4c5af;
-  --text: #1b1a17;
-  --muted: #5f5a52;
-  --accent: #0f766e;
-  --accent-soft: #d6f1eb;
-  --user: #183153;
+  --bg: #f3eadb;
+  --panel: rgba(255, 251, 244, 0.92);
+  --panel-strong: #fffdf9;
+  --line: #d8c4a4;
+  --text: #1e1b16;
+  --muted: #6c6258;
+  --accent: #166534;
+  --accent-soft: #dff4db;
+  --user: #1f3b66;
 }
 
 * {
@@ -21,12 +21,12 @@ body {
   font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
   color: var(--text);
   background:
-    radial-gradient(circle at top left, #fff7d6 0, transparent 28%),
-    linear-gradient(135deg, #efe2cf 0%, #f7f2e9 45%, #e5efe9 100%);
+    radial-gradient(circle at top left, #fff4c9 0, transparent 28%),
+    linear-gradient(135deg, #eee0ca 0%, #f9f5ee 45%, #e3efe0 100%);
 }
 
 .layout {
-  width: min(1100px, calc(100% - 32px));
+  width: min(1140px, calc(100% - 32px));
   margin: 0 auto;
   padding: 32px 0 48px;
 }
@@ -48,6 +48,7 @@ body {
 
 h1,
 h2,
+h3,
 p {
   margin-top: 0;
 }
@@ -57,13 +58,16 @@ h1 {
   font-size: clamp(2.3rem, 4vw, 4rem);
 }
 
-.subtitle {
-  max-width: 34rem;
+.subtitle,
+.muted-line,
+.chat-header p,
+.documents-header p {
   color: var(--muted);
-  font-size: 1.05rem;
 }
 
-.status-grid {
+.status-grid,
+.document-list,
+.search-results {
   display: grid;
   gap: 12px;
 }
@@ -71,7 +75,9 @@ h1 {
 .status-card,
 .chat-shell,
 .documents-shell,
-.preview-shell {
+.preview-shell,
+.vector-shell,
+.search-result {
   border: 1px solid var(--line);
   border-radius: 22px;
   background: var(--panel);
@@ -98,25 +104,23 @@ h1 {
   background: var(--accent-soft);
 }
 
-.chat-shell {
-  margin-top: 28px;
-  padding: 22px;
-}
-
+.chat-shell,
 .documents-shell {
   margin-top: 28px;
   padding: 22px;
 }
 
-.chat-header {
+.chat-header,
+.documents-header,
+.preview-header,
+.result-header,
+.search-controls,
+.document-actions,
+.form-row {
   display: flex;
   justify-content: space-between;
   gap: 12px;
-  align-items: baseline;
-}
-
-.chat-header p {
-  color: var(--muted);
+  align-items: center;
 }
 
 .chat-history {
@@ -147,67 +151,46 @@ h1 {
   border-color: transparent;
 }
 
-.chat-form {
+.chat-form,
+.search-form {
   display: grid;
   gap: 12px;
-}
-
-.documents-header,
-.preview-header {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  align-items: baseline;
 }
 
 .document-status {
   color: var(--muted);
 }
 
-.document-form {
-  display: flex;
-  gap: 12px;
-  align-items: center;
+.document-form,
+.search-controls {
   margin: 16px 0;
   flex-wrap: wrap;
 }
 
-.document-list {
-  display: grid;
-  gap: 12px;
-}
-
-.document-card {
+.document-card,
+.search-result {
   border: 1px solid var(--line);
   border-radius: 18px;
   padding: 14px 16px;
   background: var(--panel-strong);
 }
 
-.document-actions {
-  display: flex;
-  gap: 10px;
-  margin-top: 10px;
-}
-
-.preview-shell {
+.preview-shell,
+.vector-shell {
   margin-top: 16px;
   padding: 16px;
 }
 
-.document-preview {
+.document-preview,
+.result-text {
   white-space: pre-wrap;
   word-break: break-word;
   margin: 0;
-  max-height: 280px;
-  overflow-y: auto;
 }
 
-.form-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+.document-preview {
+  max-height: 280px;
+  overflow-y: auto;
 }
 
 .loading-indicator {
@@ -215,14 +198,27 @@ h1 {
   font-size: 0.95rem;
 }
 
-textarea {
+textarea,
+input[type="text"],
+input[type="number"] {
   width: 100%;
   resize: vertical;
-  min-height: 88px;
+  min-height: 48px;
   padding: 14px;
   border-radius: 16px;
   border: 1px solid var(--line);
   font: inherit;
+  background: white;
+}
+
+label {
+  display: grid;
+  gap: 6px;
+  flex: 1 1 160px;
+}
+
+.search-filter {
+  flex: 3 1 260px;
 }
 
 button {
@@ -237,9 +233,18 @@ button {
 }
 
 button:disabled,
-textarea:disabled {
+textarea:disabled,
+input:disabled {
   opacity: 0.65;
   cursor: not-allowed;
+}
+
+.result-header strong {
+  font-size: 1rem;
+}
+
+.result-score {
+  color: var(--muted);
 }
 
 .sr-only {
@@ -256,12 +261,19 @@ textarea:disabled {
 
 @media (max-width: 720px) {
   .layout {
-    width: min(100% - 20px, 1100px);
+    width: min(100% - 20px, 1140px);
     padding-top: 20px;
   }
 
-  .chat-header {
+  .chat-header,
+  .documents-header,
+  .preview-header,
+  .result-header,
+  .document-actions,
+  .search-controls,
+  .form-row {
     flex-direction: column;
+    align-items: stretch;
   }
 
   .message {

@@ -48,11 +48,18 @@ def test_required_tables_are_created(tmp_path: Path) -> None:
             """
             SELECT name
             FROM sqlite_master
-            WHERE type = 'table' AND name IN ('conversations', 'messages', 'documents', 'audit_logs');
+            WHERE type = 'table' AND name IN ('conversations', 'messages', 'documents', 'audit_logs', 'document_chunks', 'vector_index_state');
             """
         ).fetchall()
 
-    assert {row[0] for row in rows} == {"conversations", "messages", "documents", "audit_logs"}
+    assert {row[0] for row in rows} == {
+        "conversations",
+        "messages",
+        "documents",
+        "audit_logs",
+        "document_chunks",
+        "vector_index_state",
+    }
 
 
 def test_documents_and_audit_logs_columns_match_spec(tmp_path: Path) -> None:
@@ -65,9 +72,13 @@ def test_documents_and_audit_logs_columns_match_spec(tmp_path: Path) -> None:
     with sqlite3.connect(test_settings.resolved_database_path) as connection:
         documents = connection.execute("PRAGMA table_info(documents);").fetchall()
         audit_logs = connection.execute("PRAGMA table_info(audit_logs);").fetchall()
+        document_chunks = connection.execute("PRAGMA table_info(document_chunks);").fetchall()
+        vector_index_state = connection.execute("PRAGMA table_info(vector_index_state);").fetchall()
 
     document_columns = {column[1] for column in documents}
     audit_columns = {column[1] for column in audit_logs}
+    chunk_columns = {column[1] for column in document_chunks}
+    state_columns = {column[1] for column in vector_index_state}
     assert {
         "id",
         "file_name",
@@ -85,6 +96,10 @@ def test_documents_and_audit_logs_columns_match_spec(tmp_path: Path) -> None:
         "execution_time_ms",
         "created_at",
     }.issubset(audit_columns)
+    assert {"document_id", "chunk_index", "text", "start_char", "end_char", "char_count", "content_sha256"}.issubset(
+        chunk_columns
+    )
+    assert {"active_generation", "status", "chunk_count", "document_count", "dirty"}.issubset(state_columns)
 
 
 def test_invalid_config_values_raise_validation_error() -> None:
@@ -181,8 +196,33 @@ def test_check_database_rejects_missing_messages_foreign_key(tmp_path: Path) -> 
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
         CREATE TABLE schema_version (version INTEGER NOT NULL);
-        INSERT INTO schema_version(version) VALUES (2);
-        PRAGMA user_version = 2;
+        CREATE TABLE document_chunks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            document_id INTEGER NOT NULL,
+            chunk_index INTEGER NOT NULL,
+            text TEXT NOT NULL,
+            start_char INTEGER NOT NULL,
+            end_char INTEGER NOT NULL,
+            char_count INTEGER NOT NULL,
+            content_sha256 TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX idx_document_chunks_document ON document_chunks(document_id, chunk_index);
+        CREATE INDEX idx_document_chunks_sha256 ON document_chunks(content_sha256);
+        CREATE TABLE vector_index_state (
+            id INTEGER PRIMARY KEY CHECK(id = 1),
+            active_generation TEXT,
+            status TEXT NOT NULL DEFAULT 'empty',
+            embedding_model TEXT,
+            embedding_dimension INTEGER,
+            chunk_count INTEGER NOT NULL DEFAULT 0,
+            document_count INTEGER NOT NULL DEFAULT 0,
+            dirty INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT INTO vector_index_state(id, status, chunk_count, document_count, dirty) VALUES (1, 'empty', 0, 0, 0);
+        INSERT INTO schema_version(version) VALUES (3);
+        PRAGMA user_version = 3;
         """
     )
     connection.commit()

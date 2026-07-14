@@ -18,7 +18,23 @@ def write_audit_log(
     safe_arguments = {
         key: value
         for key, value in arguments.items()
-        if key in {"document_id", "file_type", "size_bytes", "status", "warning_code"}
+        if key
+        in {
+            "document_id",
+            "file_type",
+            "size_bytes",
+            "status",
+            "warning_code",
+            "generation_id",
+            "document_count",
+            "chunk_count",
+            "embedding_model",
+            "embedding_dimension",
+            "result_count",
+            "top_k",
+            "filtered_document_count",
+            "execution_time_ms",
+        }
     }
     try:
         with connection_scope(settings) as connection:

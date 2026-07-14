@@ -47,6 +47,20 @@ def _raise_duplicate_document(settings: Settings, sha256: str) -> None:
         )
 
 
+def _mark_vector_index_dirty(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        UPDATE vector_index_state
+        SET dirty = CASE
+            WHEN active_generation IS NOT NULL OR status = 'ready' OR chunk_count > 0 THEN 1
+            ELSE dirty
+        END,
+        updated_at = CURRENT_TIMESTAMP
+        WHERE id = 1;
+        """
+    )
+
+
 def create_document(
     settings: Settings,
     *,
@@ -96,6 +110,7 @@ def create_document(
                     ),
                 )
                 document_id = int(cursor.lastrowid)
+                _mark_vector_index_dirty(connection)
                 row = connection.execute("SELECT * FROM documents WHERE id = ?;", (document_id,)).fetchone()
                 if row is None:
                     raise ApiError(500, "DATABASE_ERROR", "Lokal database operatsiyasini bajarib bo'lmadi.")
@@ -143,4 +158,6 @@ def delete_document_record(connection: sqlite3.Connection, document_id: int) -> 
     """Delete a document row inside an existing transaction."""
 
     cursor = connection.execute("DELETE FROM documents WHERE id = ?;", (document_id,))
+    if cursor.rowcount > 0:
+        _mark_vector_index_dirty(connection)
     return cursor.rowcount > 0

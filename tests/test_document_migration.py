@@ -3,7 +3,7 @@ import sqlite3
 import pytest
 
 import app.database as database
-from app.database import DOCUMENT_COLUMNS_V2, SCHEMA_VERSION, initialize_database
+from app.database import DOCUMENT_CHUNK_COLUMNS, DOCUMENT_COLUMNS_V2, SCHEMA_VERSION, VECTOR_INDEX_STATE_COLUMNS, initialize_database
 from tests.conftest import build_settings
 
 
@@ -64,28 +64,34 @@ def inspect_state(path):
     return tables, version, schema_value, count
 
 
-def test_version_1_database_migrates_to_v2(tmp_path) -> None:
+def test_version_1_database_migrates_to_v3(tmp_path) -> None:
     settings = build_settings(tmp_path)
     create_v1_database(settings.resolved_database_path)
     initialize_database(settings)
 
     connection = sqlite3.connect(settings.resolved_database_path)
     columns = {row[1] for row in connection.execute("PRAGMA table_info(documents);").fetchall()}
+    chunk_columns = {row[1] for row in connection.execute("PRAGMA table_info(document_chunks);").fetchall()}
+    state_columns = {row[1] for row in connection.execute("PRAGMA table_info(vector_index_state);").fetchall()}
     conversation_count = connection.execute("SELECT COUNT(*) FROM conversations;").fetchone()[0]
     message_count = connection.execute("SELECT COUNT(*) FROM messages;").fetchone()[0]
     document_count = connection.execute("SELECT COUNT(*) FROM documents;").fetchone()[0]
     version = connection.execute("PRAGMA user_version;").fetchone()[0]
     indexes = {row[1] for row in connection.execute("PRAGMA index_list(documents);").fetchall()}
     schema_version = connection.execute("SELECT version FROM schema_version LIMIT 1;").fetchone()[0]
+    state = connection.execute("SELECT status, active_generation, dirty FROM vector_index_state WHERE id = 1;").fetchone()
     connection.close()
 
     assert DOCUMENT_COLUMNS_V2.issubset(columns)
+    assert DOCUMENT_CHUNK_COLUMNS.issubset(chunk_columns)
+    assert VECTOR_INDEX_STATE_COLUMNS.issubset(state_columns)
     assert conversation_count == 1
     assert message_count == 1
     assert document_count == 1
     assert version == SCHEMA_VERSION
     assert schema_version == SCHEMA_VERSION
     assert "idx_documents_sha256" in indexes
+    assert state == ("empty", None, 0)
 
 
 def test_migration_is_idempotent(tmp_path) -> None:

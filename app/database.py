@@ -5,8 +5,16 @@ from pathlib import Path
 from app.config import Settings, get_settings
 
 
-SCHEMA_VERSION = 2
-EXPECTED_TABLES = ("conversations", "messages", "documents", "audit_logs", "schema_version")
+SCHEMA_VERSION = 3
+EXPECTED_TABLES = (
+    "conversations",
+    "messages",
+    "documents",
+    "audit_logs",
+    "document_chunks",
+    "vector_index_state",
+    "schema_version",
+)
 CONVERSATION_COLUMNS = {"id", "created_at", "title", "updated_at"}
 MESSAGE_COLUMNS = {"id", "conversation_id", "role", "content", "created_at"}
 AUDIT_LOG_COLUMNS = {"id", "action", "tool_name", "arguments", "status", "execution_time_ms", "created_at"}
@@ -26,17 +34,35 @@ DOCUMENT_COLUMNS_V2 = {
     "warning_code",
     "updated_at",
 }
+DOCUMENT_CHUNK_COLUMNS = {
+    "id",
+    "document_id",
+    "chunk_index",
+    "text",
+    "start_char",
+    "end_char",
+    "char_count",
+    "content_sha256",
+    "created_at",
+}
+VECTOR_INDEX_STATE_COLUMNS = {
+    "id",
+    "active_generation",
+    "status",
+    "embedding_model",
+    "embedding_dimension",
+    "chunk_count",
+    "document_count",
+    "dirty",
+    "updated_at",
+}
 
 
 def ensure_parent_directory(database_path: Path) -> None:
-    """Create the database parent directory when needed."""
-
     database_path.parent.mkdir(parents=True, exist_ok=True)
 
 
 def get_connection(settings: Settings | None = None) -> sqlite3.Connection:
-    """Create a SQLite connection with row access by name."""
-
     active_settings = settings or get_settings()
     connection = sqlite3.connect(active_settings.resolved_database_path)
     connection.row_factory = sqlite3.Row
@@ -46,8 +72,6 @@ def get_connection(settings: Settings | None = None) -> sqlite3.Connection:
 
 @contextmanager
 def connection_scope(settings: Settings | None = None):
-    """Yield a SQLite connection and always close it."""
-
     connection = get_connection(settings)
     try:
         yield connection
@@ -56,15 +80,11 @@ def connection_scope(settings: Settings | None = None):
 
 
 def get_schema_version(connection: sqlite3.Connection) -> int:
-    """Return the SQLite PRAGMA user_version."""
-
     row = connection.execute("PRAGMA user_version;").fetchone()
     return int(row[0]) if row else 0
 
 
 def get_schema_version_table_value(connection: sqlite3.Connection) -> int | None:
-    """Return the auxiliary schema_version table value when present."""
-
     if "schema_version" not in fetch_existing_tables(connection):
         return None
     row = connection.execute("SELECT version FROM schema_version LIMIT 1;").fetchone()
@@ -72,14 +92,10 @@ def get_schema_version_table_value(connection: sqlite3.Connection) -> int | None
 
 
 def set_schema_version(connection: sqlite3.Connection, version: int) -> None:
-    """Set SQLite PRAGMA user_version."""
-
     connection.execute(f"PRAGMA user_version = {version};")
 
 
 def create_schema_version_table(connection: sqlite3.Connection) -> None:
-    """Create or update the auxiliary schema_version table."""
-
     connection.execute(
         """
         CREATE TABLE IF NOT EXISTS schema_version (
@@ -94,9 +110,89 @@ def create_schema_version_table(connection: sqlite3.Connection) -> None:
         connection.execute("UPDATE schema_version SET version = ?;", (SCHEMA_VERSION,))
 
 
-def create_tables(connection: sqlite3.Connection) -> None:
-    """Create the current schema tables."""
+def create_document_indexes(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_sha256
+        ON documents(sha256)
+        WHERE sha256 IS NOT NULL;
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_documents_created_at
+        ON documents(created_at DESC);
+        """
+    )
 
+
+def create_document_chunk_tables(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS document_chunks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            document_id INTEGER NOT NULL,
+            chunk_index INTEGER NOT NULL,
+            text TEXT NOT NULL,
+            start_char INTEGER NOT NULL CHECK(start_char >= 0),
+            end_char INTEGER NOT NULL CHECK(end_char > start_char),
+            char_count INTEGER NOT NULL CHECK(char_count > 0),
+            content_sha256 TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(document_id) REFERENCES documents(id) ON DELETE CASCADE,
+            UNIQUE(document_id, chunk_index)
+        );
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_document_chunks_document
+        ON document_chunks(document_id, chunk_index);
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_document_chunks_sha256
+        ON document_chunks(content_sha256);
+        """
+    )
+
+
+def ensure_vector_index_state_row(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS vector_index_state (
+            id INTEGER PRIMARY KEY CHECK(id = 1),
+            active_generation TEXT,
+            status TEXT NOT NULL DEFAULT 'empty' CHECK(status IN ('empty', 'ready', 'error')),
+            embedding_model TEXT,
+            embedding_dimension INTEGER,
+            chunk_count INTEGER NOT NULL DEFAULT 0,
+            document_count INTEGER NOT NULL DEFAULT 0,
+            dirty INTEGER NOT NULL DEFAULT 0 CHECK(dirty IN (0, 1)),
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+    )
+    row = connection.execute("SELECT COUNT(*) FROM vector_index_state WHERE id = 1;").fetchone()
+    if row and row[0] == 0:
+        connection.execute(
+            """
+            INSERT INTO vector_index_state (
+                id,
+                active_generation,
+                status,
+                embedding_model,
+                embedding_dimension,
+                chunk_count,
+                document_count,
+                dirty
+            ) VALUES (1, NULL, 'empty', NULL, NULL, 0, 0, 0);
+            """
+        )
+
+
+def create_tables(connection: sqlite3.Connection) -> None:
     connection.execute(
         """
         CREATE TABLE IF NOT EXISTS conversations (
@@ -153,12 +249,12 @@ def create_tables(connection: sqlite3.Connection) -> None:
         """
     )
     create_document_indexes(connection)
+    create_document_chunk_tables(connection)
+    ensure_vector_index_state_row(connection)
     create_schema_version_table(connection)
 
 
 def fetch_existing_tables(connection: sqlite3.Connection) -> set[str]:
-    """Return the existing user tables."""
-
     rows = connection.execute(
         """
         SELECT name
@@ -170,22 +266,16 @@ def fetch_existing_tables(connection: sqlite3.Connection) -> set[str]:
 
 
 def get_table_columns(connection: sqlite3.Connection, table_name: str) -> set[str]:
-    """Return column names for a table."""
-
     rows = connection.execute(f"PRAGMA table_info({table_name});").fetchall()
     return {str(row["name"]) for row in rows}
 
 
 def index_exists(connection: sqlite3.Connection, table_name: str, index_name: str) -> bool:
-    """Check whether an index exists for a table."""
-
     rows = connection.execute(f"PRAGMA index_list({table_name});").fetchall()
     return any(str(row["name"]) == index_name for row in rows)
 
 
 def messages_foreign_key_valid(connection: sqlite3.Connection) -> bool:
-    """Validate that messages points to conversations with cascade delete."""
-
     rows = connection.execute("PRAGMA foreign_key_list(messages);").fetchall()
     for row in rows:
         if (
@@ -198,27 +288,20 @@ def messages_foreign_key_valid(connection: sqlite3.Connection) -> bool:
     return False
 
 
-def create_document_indexes(connection: sqlite3.Connection) -> None:
-    """Create indexes required by the documents table."""
-
-    connection.execute(
-        """
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_sha256
-        ON documents(sha256)
-        WHERE sha256 IS NOT NULL;
-        """
-    )
-    connection.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_documents_created_at
-        ON documents(created_at DESC);
-        """
-    )
+def document_chunks_foreign_key_valid(connection: sqlite3.Connection) -> bool:
+    rows = connection.execute("PRAGMA foreign_key_list(document_chunks);").fetchall()
+    for row in rows:
+        if (
+            str(row["table"]) == "documents"
+            and str(row["from"]) == "document_id"
+            and str(row["to"]) == "id"
+            and str(row["on_delete"]).upper() == "CASCADE"
+        ):
+            return True
+    return False
 
 
 def create_documents_v2_table(connection: sqlite3.Connection) -> None:
-    """Create the version 2 documents table."""
-
     connection.execute(
         """
         CREATE TABLE documents (
@@ -242,10 +325,17 @@ def create_documents_v2_table(connection: sqlite3.Connection) -> None:
 
 
 def copy_documents_rows_to_v2(connection: sqlite3.Connection) -> None:
-    """Copy legacy document rows into the version 2 table."""
-
+    columns = get_table_columns(connection, "documents_legacy")
+    size_bytes = "COALESCE(size_bytes, 0)" if "size_bytes" in columns else "0"
+    sha256 = "sha256" if "sha256" in columns else "NULL"
+    status = "COALESCE(status, 'uploaded')" if "status" in columns else "'uploaded'"
+    text_path = "text_path" if "text_path" in columns else "NULL"
+    char_count = "COALESCE(char_count, 0)" if "char_count" in columns else "0"
+    page_count = "page_count" if "page_count" in columns else "NULL"
+    warning_code = "warning_code" if "warning_code" in columns else "NULL"
+    updated_at = "COALESCE(updated_at, created_at)" if "updated_at" in columns else "created_at"
     connection.execute(
-        """
+        f"""
         INSERT INTO documents (
             id,
             file_name,
@@ -269,27 +359,24 @@ def copy_documents_rows_to_v2(connection: sqlite3.Connection) -> None:
             file_type,
             COALESCE(indexed, 0),
             created_at,
-            0,
-            NULL,
-            'uploaded',
-            NULL,
-            0,
-            NULL,
-            NULL,
-            created_at
+            {size_bytes},
+            {sha256},
+            {status},
+            {text_path},
+            {char_count},
+            {page_count},
+            {warning_code},
+            {updated_at}
         FROM documents_legacy;
         """
     )
 
 
 def migrate_documents_table_to_v2(connection: sqlite3.Connection) -> None:
-    """Migrate legacy documents rows into the v2 table shape."""
-
     columns = get_table_columns(connection, "documents")
     if DOCUMENT_COLUMNS_V2.issubset(columns):
         create_document_indexes(connection)
         return
-
     connection.execute("ALTER TABLE documents RENAME TO documents_legacy;")
     create_documents_v2_table(connection)
     copy_documents_rows_to_v2(connection)
@@ -298,28 +385,25 @@ def migrate_documents_table_to_v2(connection: sqlite3.Connection) -> None:
 
 
 def migrate_schema(connection: sqlite3.Connection) -> None:
-    """Migrate any existing database to schema version 2."""
-
     existing_tables = fetch_existing_tables(connection)
     if not existing_tables:
         create_tables(connection)
         set_schema_version(connection, SCHEMA_VERSION)
         return
 
-    if not set(EXPECTED_TABLES[:-1]).issubset(existing_tables):
+    if not {"conversations", "messages", "documents", "audit_logs"}.issubset(existing_tables):
         raise RuntimeError("Mavjud database schema to'liq emas yoki kutilmagan holatda.")
 
     migrate_documents_table_to_v2(connection)
+    create_document_chunk_tables(connection)
+    ensure_vector_index_state_row(connection)
     create_schema_version_table(connection)
     set_schema_version(connection, SCHEMA_VERSION)
 
 
 def initialize_database(settings: Settings | None = None) -> None:
-    """Create or migrate the SQLite database."""
-
     active_settings = settings or get_settings()
     ensure_parent_directory(active_settings.resolved_database_path)
-
     try:
         with closing(get_connection(active_settings)) as connection:
             connection.execute("BEGIN;")
@@ -334,8 +418,6 @@ def initialize_database(settings: Settings | None = None) -> None:
 
 
 def check_database(settings: Settings | None = None) -> bool:
-    """Return whether the current database is present and structurally valid."""
-
     active_settings = settings or get_settings()
     database_path = active_settings.resolved_database_path
     if not database_path.exists():
@@ -355,15 +437,28 @@ def check_database(settings: Settings | None = None) -> bool:
                 return False
             if not MESSAGE_COLUMNS.issubset(get_table_columns(connection, "messages")):
                 return False
-            if not messages_foreign_key_valid(connection):
+            if not DOCUMENT_COLUMNS_V2.issubset(get_table_columns(connection, "documents")):
                 return False
             if not AUDIT_LOG_COLUMNS.issubset(get_table_columns(connection, "audit_logs")):
                 return False
-            if not DOCUMENT_COLUMNS_V2.issubset(get_table_columns(connection, "documents")):
+            if not DOCUMENT_CHUNK_COLUMNS.issubset(get_table_columns(connection, "document_chunks")):
+                return False
+            if not VECTOR_INDEX_STATE_COLUMNS.issubset(get_table_columns(connection, "vector_index_state")):
+                return False
+            if not messages_foreign_key_valid(connection):
+                return False
+            if not document_chunks_foreign_key_valid(connection):
                 return False
             if not index_exists(connection, "documents", "idx_documents_sha256"):
                 return False
             if not index_exists(connection, "documents", "idx_documents_created_at"):
+                return False
+            if not index_exists(connection, "document_chunks", "idx_document_chunks_document"):
+                return False
+            if not index_exists(connection, "document_chunks", "idx_document_chunks_sha256"):
+                return False
+            state_row = connection.execute("SELECT COUNT(*) FROM vector_index_state WHERE id = 1;").fetchone()
+            if not state_row or int(state_row[0]) != 1:
                 return False
         return True
     except (sqlite3.Error, RuntimeError):

@@ -1,5 +1,8 @@
 const healthStatus = document.getElementById("health-status");
 const modelStatus = document.getElementById("model-status");
+const vectorStatusSummary = document.getElementById("vector-status-summary");
+const vectorStatusMeta = document.getElementById("vector-status-meta");
+const vectorStatusDetail = document.getElementById("vector-status-detail");
 const chatStatus = document.getElementById("chat-status");
 const chatForm = document.getElementById("chat-form");
 const messageInput = document.getElementById("message-input");
@@ -9,10 +12,18 @@ const loadingIndicator = document.getElementById("loading-indicator");
 const documentForm = document.getElementById("document-form");
 const documentInput = document.getElementById("document-input");
 const uploadButton = document.getElementById("upload-button");
+const rebuildIndexButton = document.getElementById("rebuild-index-button");
 const documentStatus = document.getElementById("document-status");
 const documentList = document.getElementById("document-list");
 const documentPreview = document.getElementById("document-preview");
 const previewMeta = document.getElementById("preview-meta");
+const searchForm = document.getElementById("search-form");
+const searchQuery = document.getElementById("search-query");
+const searchTopK = document.getElementById("search-top-k");
+const searchDocumentIds = document.getElementById("search-document-ids");
+const searchButton = document.getElementById("search-button");
+const searchStatus = document.getElementById("search-status");
+const searchResults = document.getElementById("search-results");
 
 let conversationId = null;
 
@@ -22,6 +33,10 @@ async function safeJson(response) {
   } catch (error) {
     return null;
   }
+}
+
+function apiMessage(payload, fallback) {
+  return payload?.detail?.message || fallback;
 }
 
 async function loadHealthStatus() {
@@ -40,30 +55,25 @@ async function loadModelStatus() {
     const payload = await safeJson(response);
     if (!payload) {
       modelStatus.textContent = "backend error";
-      chatStatus.textContent = "Model status javobi noto‘g‘ri formatda keldi.";
+      chatStatus.textContent = "Model status javobi noto'g'ri formatda keldi.";
       return;
     }
     if (response.ok && payload.installed) {
       modelStatus.textContent = `${payload.model} ready`;
-      chatStatus.textContent = "Local model tayyor.";
       return;
     }
     if (!response.ok) {
       modelStatus.textContent = "backend error";
-      chatStatus.textContent = payload?.detail?.message || "Model statusni yuklab bo‘lmadi.";
+      chatStatus.textContent = apiMessage(payload, "Model statusni yuklab bo'lmadi.");
       return;
     }
     if (payload.ollama === "unreachable") {
       modelStatus.textContent = "Ollama unreachable";
-      chatStatus.textContent = "Ollama server ishlamayapti yoki ulanib bo‘lmadi.";
       return;
     }
-    const modelName = payload?.model || "configured model";
-    modelStatus.textContent = `${modelName} missing`;
-    chatStatus.textContent = "Model o‘rnatilmagan. scripts/prepare_ollama.ps1 orqali tayyorlang.";
+    modelStatus.textContent = `${payload?.model || "configured model"} missing`;
   } catch (error) {
     modelStatus.textContent = "status error";
-    chatStatus.textContent = "Model statusni yuklab bo‘lmadi.";
   }
 }
 
@@ -95,24 +105,21 @@ async function submitChat() {
     const response = await fetch("/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        message: content,
-        conversation_id: conversationId,
-      }),
+      body: JSON.stringify({ message: content, conversation_id: conversationId }),
     });
     const payload = await safeJson(response);
     if (!payload) {
-      appendMessage("Backend noto‘g‘ri javob qaytardi.", "system");
+      appendMessage("Backend noto'g'ri javob qaytardi.", "system");
       return;
     }
     if (!response.ok) {
-      appendMessage(payload?.detail?.message || "Noma’lum xatolik yuz berdi.", "system");
+      appendMessage(apiMessage(payload, "Noma'lum xatolik yuz berdi."), "system");
       return;
     }
     conversationId = payload.conversation_id;
     appendMessage(payload.answer, "system");
   } catch (error) {
-    appendMessage("Backend bilan bog‘lanib bo‘lmadi.", "system");
+    appendMessage("Backend bilan bog'lanib bo'lmadi.", "system");
   } finally {
     setLoadingState(false);
     messageInput.focus();
@@ -129,8 +136,34 @@ function formatBytes(value) {
   return `${(value / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function shortGeneration(value) {
+  if (!value) {
+    return "none";
+  }
+  return value.length > 24 ? `${value.slice(0, 24)}...` : value;
+}
+
 function setDocumentStatus(message) {
   documentStatus.textContent = message;
+}
+
+async function refreshVectorStatus() {
+  try {
+    const response = await fetch("/vector-index/status");
+    const payload = await safeJson(response);
+    if (!payload || !response.ok) {
+      vectorStatusSummary.textContent = "error";
+      vectorStatusMeta.textContent = "";
+      vectorStatusDetail.textContent = apiMessage(payload, "Vector index statusni yuklab bo'lmadi.");
+      return;
+    }
+    vectorStatusSummary.textContent = `${payload.status}${payload.dirty ? " (dirty)" : ""}`;
+    vectorStatusMeta.textContent = `gen=${shortGeneration(payload.active_generation)}`;
+    vectorStatusDetail.textContent = `docs=${payload.document_count} chunks=${payload.chunk_count} model=${payload.embedding_model || "-"} dim=${payload.embedding_dimension || "-"}`;
+  } catch (error) {
+    vectorStatusSummary.textContent = "error";
+    vectorStatusDetail.textContent = "Vector index statusni yuklab bo'lmadi.";
+  }
 }
 
 async function refreshDocuments() {
@@ -138,13 +171,13 @@ async function refreshDocuments() {
     const response = await fetch("/documents?limit=50&offset=0");
     const payload = await safeJson(response);
     if (!payload || !response.ok) {
-      setDocumentStatus(payload?.detail?.message || "Document listni yuklab bo‘lmadi.");
+      setDocumentStatus(apiMessage(payload, "Document listni yuklab bo'lmadi."));
       return;
     }
     documentList.textContent = "";
     if (!payload.items.length) {
       const empty = document.createElement("p");
-      empty.textContent = "Hozircha hujjatlar yo‘q.";
+      empty.textContent = "Hozircha hujjatlar yo'q.";
       documentList.appendChild(empty);
       return;
     }
@@ -159,7 +192,7 @@ async function refreshDocuments() {
       meta.textContent = `${item.file_type.toUpperCase()} • ${formatBytes(item.size_bytes)} • status=${item.status} • chars=${item.char_count}`;
 
       const extra = document.createElement("p");
-      extra.textContent = `pages=${item.page_count ?? "-"} • warning=${item.warning_code ?? "none"}`;
+      extra.textContent = `pages=${item.page_count ?? "-"} • indexed=${item.indexed} • warning=${item.warning_code ?? "none"}`;
 
       const actions = document.createElement("div");
       actions.className = "document-actions";
@@ -171,6 +204,14 @@ async function refreshDocuments() {
         await previewDocument(item.id);
       });
 
+      const indexButton = document.createElement("button");
+      indexButton.type = "button";
+      indexButton.textContent = "Index";
+      indexButton.disabled = item.status !== "ready" || item.char_count <= 0;
+      indexButton.addEventListener("click", async () => {
+        await indexDocument(item.id, item.file_name);
+      });
+
       const deleteButton = document.createElement("button");
       deleteButton.type = "button";
       deleteButton.textContent = "Delete";
@@ -179,6 +220,7 @@ async function refreshDocuments() {
       });
 
       actions.appendChild(previewButton);
+      actions.appendChild(indexButton);
       actions.appendChild(deleteButton);
       card.appendChild(title);
       card.appendChild(meta);
@@ -187,7 +229,7 @@ async function refreshDocuments() {
       documentList.appendChild(card);
     });
   } catch (error) {
-    setDocumentStatus("Document listni yuklab bo‘lmadi.");
+    setDocumentStatus("Document listni yuklab bo'lmadi.");
   }
 }
 
@@ -195,7 +237,7 @@ async function previewDocument(documentId) {
   const response = await fetch(`/documents/${documentId}/text?limit=5000`);
   const payload = await safeJson(response);
   if (!payload || !response.ok) {
-    documentPreview.textContent = payload?.detail?.message || "Previewni yuklab bo‘lmadi.";
+    documentPreview.textContent = apiMessage(payload, "Previewni yuklab bo'lmadi.");
     previewMeta.textContent = "";
     return;
   }
@@ -204,19 +246,20 @@ async function previewDocument(documentId) {
 }
 
 async function deleteDocument(documentId, fileName) {
-  if (!window.confirm(`${fileName} hujjatini o‘chirishni tasdiqlaysizmi?`)) {
+  if (!window.confirm(`${fileName} hujjatini o'chirishni tasdiqlaysizmi?`)) {
     return;
   }
   const response = await fetch(`/documents/${documentId}?confirm=true`, { method: "DELETE" });
   const payload = await safeJson(response);
   if (!response.ok) {
-    setDocumentStatus(payload?.detail?.message || "Delete bajarilmadi.");
+    setDocumentStatus(apiMessage(payload, "Delete bajarilmadi."));
     return;
   }
   documentPreview.textContent = "Preview hali tanlanmagan.";
   previewMeta.textContent = "";
   setDocumentStatus("Delete bajarildi.");
   await refreshDocuments();
+  await refreshVectorStatus();
 }
 
 async function uploadDocument(event) {
@@ -232,23 +275,144 @@ async function uploadDocument(event) {
   documentInput.disabled = true;
   setDocumentStatus("Upload qilinmoqda...");
   try {
-    const response = await fetch("/documents/upload", {
-      method: "POST",
-      body: formData,
-    });
+    const response = await fetch("/documents/upload", { method: "POST", body: formData });
     const payload = await safeJson(response);
     if (!payload || !response.ok) {
-      setDocumentStatus(payload?.detail?.message || "Upload bajarilmadi.");
+      setDocumentStatus(apiMessage(payload, "Upload bajarilmadi."));
       return;
     }
     setDocumentStatus(`Yuklandi: ${payload.file_name}`);
     documentInput.value = "";
     await refreshDocuments();
+    await refreshVectorStatus();
   } catch (error) {
-    setDocumentStatus("Upload vaqtida backend bilan bog‘lanib bo‘lmadi.");
+    setDocumentStatus("Upload vaqtida backend bilan bog'lanib bo'lmadi.");
   } finally {
     uploadButton.disabled = false;
     documentInput.disabled = false;
+  }
+}
+
+async function rebuildIndex() {
+  rebuildIndexButton.disabled = true;
+  setDocumentStatus("Vector index qayta qurilmoqda...");
+  try {
+    const response = await fetch("/vector-index/rebuild", { method: "POST" });
+    const payload = await safeJson(response);
+    if (!payload || !response.ok) {
+      setDocumentStatus(apiMessage(payload, "Vector indexni qayta qurib bo'lmadi."));
+      return;
+    }
+    setDocumentStatus(`Index ready: ${shortGeneration(payload.generation_id)}`);
+    await refreshDocuments();
+    await refreshVectorStatus();
+  } finally {
+    rebuildIndexButton.disabled = false;
+  }
+}
+
+async function indexDocument(documentId, fileName) {
+  setDocumentStatus(`${fileName} uchun index rebuild boshlandi...`);
+  try {
+    const response = await fetch(`/documents/${documentId}/index`, { method: "POST" });
+    const payload = await safeJson(response);
+    if (!payload || !response.ok) {
+      setDocumentStatus(apiMessage(payload, "Document index bajarilmadi."));
+      return;
+    }
+    setDocumentStatus(`Index ready: ${shortGeneration(payload.generation_id)}`);
+    await refreshDocuments();
+    await refreshVectorStatus();
+  } catch (error) {
+    setDocumentStatus("Index so'rovini bajarib bo'lmadi.");
+  }
+}
+
+function parseDocumentIds() {
+  const raw = searchDocumentIds.value.trim();
+  if (!raw) {
+    return null;
+  }
+  const ids = raw
+    .split(",")
+    .map((part) => Number.parseInt(part.trim(), 10))
+    .filter((value) => Number.isInteger(value) && value > 0);
+  return Array.from(new Set(ids));
+}
+
+function renderSearchResults(items) {
+  searchResults.textContent = "";
+  if (!items.length) {
+    const empty = document.createElement("p");
+    empty.textContent = "Natija topilmadi.";
+    searchResults.appendChild(empty);
+    return;
+  }
+  items.forEach((item) => {
+    const card = document.createElement("article");
+    card.className = "search-result";
+
+    const header = document.createElement("div");
+    header.className = "result-header";
+
+    const title = document.createElement("strong");
+    title.textContent = `${item.file_name} • chunk #${item.chunk_index}`;
+
+    const score = document.createElement("span");
+    score.className = "result-score";
+    score.textContent = `score=${item.score.toFixed(3)} • ${item.start_char}-${item.end_char}`;
+
+    const text = document.createElement("pre");
+    text.className = "result-text";
+    text.textContent = item.text;
+
+    header.appendChild(title);
+    header.appendChild(score);
+    card.appendChild(header);
+    card.appendChild(text);
+    searchResults.appendChild(card);
+  });
+}
+
+async function runSearch(event) {
+  event.preventDefault();
+  const query = searchQuery.value.trim();
+  if (!query) {
+    searchStatus.textContent = "Query bo'sh.";
+    return;
+  }
+  searchButton.disabled = true;
+  searchQuery.disabled = true;
+  searchTopK.disabled = true;
+  searchDocumentIds.disabled = true;
+  searchStatus.textContent = "Qidirilmoqda...";
+  try {
+    const response = await fetch("/vector-search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query,
+        top_k: Number.parseInt(searchTopK.value, 10) || 4,
+        document_ids: parseDocumentIds(),
+      }),
+    });
+    const payload = await safeJson(response);
+    if (!payload || !response.ok) {
+      searchStatus.textContent = apiMessage(
+        payload,
+        "Semantic search bajarilmadi. Model tayyor bo'lmasa .\\scripts\\prepare_embeddings.ps1 dan foydalaning.",
+      );
+      return;
+    }
+    searchStatus.textContent = `Ready • ${payload.execution_time_ms} ms • gen=${shortGeneration(payload.generation_id)}`;
+    renderSearchResults(payload.results);
+  } catch (error) {
+    searchStatus.textContent = "Semantic search vaqtida backend bilan bog'lanib bo'lmadi.";
+  } finally {
+    searchButton.disabled = false;
+    searchQuery.disabled = false;
+    searchTopK.disabled = false;
+    searchDocumentIds.disabled = false;
   }
 }
 
@@ -265,7 +429,10 @@ messageInput.addEventListener("keydown", async (event) => {
 });
 
 documentForm.addEventListener("submit", uploadDocument);
+rebuildIndexButton.addEventListener("click", rebuildIndex);
+searchForm.addEventListener("submit", runSearch);
 
 loadHealthStatus();
 loadModelStatus();
+refreshVectorStatus();
 refreshDocuments();

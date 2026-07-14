@@ -10,9 +10,9 @@
     <main class="layout">
         <section class="hero">
             <div>
-                <p class="eyebrow">Phase 1 foundation</p>
+                <p class="eyebrow">Phase 4 vector indexing</p>
                 <h1>Local Agent Demo</h1>
-                <p class="subtitle">Minimal FastAPI backend va oddiy frontend.</p>
+                <p class="subtitle">Deterministic chunking, multilingual embeddings va semantic search tayyor. Chat hali RAG ishlatmaydi.</p>
             </div>
             <div class="status-grid">
                 <article class="status-card">
@@ -24,8 +24,8 @@
                     <strong id="model-status">Checking...</strong>
                 </article>
                 <article class="status-card accent">
-                    <span>RAG</span>
-                    <strong>Hali ulanmagan</strong>
+                    <span>Vector index</span>
+                    <strong id="vector-status-summary">Checking...</strong>
                 </article>
             </div>
         </section>
@@ -33,11 +33,11 @@
         <section class="chat-shell">
             <div class="chat-header">
                 <h2>Chat</h2>
-                <p id="chat-status">Local Ollama integratsiyasi tayyorlanmoqda.</p>
+                <p id="chat-status">Chat hali semantic search natijalarini promptga ulmaydi.</p>
             </div>
             <div id="chat-history" class="chat-history" aria-live="polite">
                 <article class="message system">
-                    <p>Assalomu alaykum. Model tayyor bo‘lsa shu yerdan real lokal chat ishlaydi.</p>
+                    <p>Assalomu alaykum. Bu panel faqat lokal chat uchun. RAG Phase 5 da ulanadi.</p>
                 </article>
             </div>
             <form id="chat-form" class="chat-form">
@@ -54,14 +54,22 @@
             <div class="documents-header">
                 <div>
                     <h2>Documents</h2>
-                    <p>Upload, preview va delete mavjud. Chat hali hujjatlardan foydalanmaydi.</p>
+                    <p>Upload, preview, delete va manual index rebuild mavjud.</p>
                 </div>
                 <span id="document-status" class="document-status">Ready</span>
             </div>
             <form id="document-form" class="document-form">
                 <input id="document-input" type="file" accept=".pdf,.docx,.txt,.md">
                 <button id="upload-button" type="submit">Upload</button>
+                <button id="rebuild-index-button" type="button">Rebuild index</button>
             </form>
+            <article class="vector-shell">
+                <div class="preview-header">
+                    <h3>Vector Index Status</h3>
+                    <span id="vector-status-meta"></span>
+                </div>
+                <p id="vector-status-detail" class="muted-line">Status yuklanmoqda...</p>
+            </article>
             <div id="document-list" class="document-list"></div>
             <article class="preview-shell">
                 <div class="preview-header">
@@ -70,6 +78,31 @@
                 </div>
                 <pre id="document-preview" class="document-preview">Preview hali tanlanmagan.</pre>
             </article>
+        </section>
+
+        <section class="documents-shell">
+            <div class="documents-header">
+                <div>
+                    <h2>Semantic Search</h2>
+                    <p>Global index bo'yicha qidiradi. Internal path ko'rsatilmaydi.</p>
+                </div>
+                <span id="search-status" class="document-status">Ready</span>
+            </div>
+            <form id="search-form" class="search-form">
+                <textarea id="search-query" rows="3" placeholder="Masalan: Agent xavfsizligi qanday ta'minlanadi?"></textarea>
+                <div class="search-controls">
+                    <label>
+                        <span>Top K</span>
+                        <input id="search-top-k" type="number" min="1" max="20" value="4">
+                    </label>
+                    <label class="search-filter">
+                        <span>Document IDs (ixtiyoriy)</span>
+                        <input id="search-document-ids" type="text" placeholder="1,2,3">
+                    </label>
+                    <button id="search-button" type="submit">Search</button>
+                </div>
+            </form>
+            <div id="search-results" class="search-results"></div>
         </section>
     </main>
     <script src="/static/app.js"></script>

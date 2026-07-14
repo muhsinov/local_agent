@@ -123,6 +123,8 @@ class FakeConnection:
                 }
             )
             return type("Cursor", (), {"lastrowid": self.lastrowid})()
+        if normalized.startswith("UPDATE VECTOR_INDEX_STATE"):
+            return None
         if normalized.startswith("SELECT * FROM DOCUMENTS WHERE ID = ?;"):
             if self.fail_on_select:
                 raise sqlite3.OperationalError("select failed")

@@ -1,7 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field, field_validator
+from pydantic import AliasChoices, Field, model_validator, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -16,7 +16,11 @@ class Settings(BaseSettings):
     database_path: Path = Field(default=Path("data/local_agent.db"), alias="DATABASE_PATH")
     upload_directory: Path = Field(default=Path("data/uploads"), alias="UPLOAD_DIRECTORY")
     extracted_text_directory: Path = Field(default=Path("data/extracted"), alias="EXTRACTED_TEXT_DIRECTORY")
-    vector_store_directory: Path = Field(default=Path("data/vector_store"), alias="VECTOR_STORE_DIRECTORY")
+    vector_store_directory: Path = Field(
+        default=Path("data/vector_store"),
+        alias="VECTOR_INDEX_DIRECTORY",
+        validation_alias=AliasChoices("VECTOR_INDEX_DIRECTORY", "VECTOR_STORE_DIRECTORY"),
+    )
     ollama_base_url: str = Field(default="http://localhost:11434", alias="OLLAMA_BASE_URL")
     ollama_model: str = Field(default="qwen3:1.7b", alias="OLLAMA_MODEL")
     ollama_keep_alive: str = Field(default="2m", alias="OLLAMA_KEEP_ALIVE")
@@ -53,6 +57,40 @@ class Settings(BaseSettings):
     request_timeout_seconds: int = Field(default=90, alias="REQUEST_TIMEOUT_SECONDS", ge=1, le=300)
     max_agent_iterations: int = Field(default=5, alias="MAX_AGENT_ITERATIONS", ge=1, le=10)
     max_file_size_mb: int = Field(default=10, alias="MAX_FILE_SIZE_MB", ge=1, le=100)
+    embedding_model_name: str = Field(
+        default="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+        alias="EMBEDDING_MODEL_NAME",
+    )
+    embedding_device: str = Field(default="cpu", alias="EMBEDDING_DEVICE")
+    embedding_dimension: int = Field(default=384, alias="EMBEDDING_DIMENSION", ge=64, le=4096)
+    embedding_batch_size: int = Field(default=16, alias="EMBEDDING_BATCH_SIZE", ge=1, le=64)
+    embedding_max_sequence_length: int = Field(
+        default=128,
+        alias="EMBEDDING_MAX_SEQUENCE_LENGTH",
+        ge=32,
+        le=512,
+    )
+    embedding_keep_loaded: bool = Field(default=False, alias="EMBEDDING_KEEP_LOADED")
+    embedding_local_files_only: bool = Field(default=False, alias="EMBEDDING_LOCAL_FILES_ONLY")
+    chunk_size_chars: int = Field(default=700, alias="CHUNK_SIZE_CHARS", ge=200, le=4000)
+    chunk_overlap_chars: int = Field(default=100, alias="CHUNK_OVERLAP_CHARS", ge=0, le=1000)
+    chunk_min_chars: int = Field(default=80, alias="CHUNK_MIN_CHARS", ge=20, le=1000)
+    max_chunks_per_document: int = Field(default=5000, alias="MAX_CHUNKS_PER_DOCUMENT", ge=1, le=20000)
+    vector_search_top_k: int = Field(default=4, alias="VECTOR_SEARCH_TOP_K", ge=1, le=20)
+    vector_search_max_k: int = Field(default=20, alias="VECTOR_SEARCH_MAX_K", ge=1, le=100)
+    vector_min_score: float = Field(default=0.15, alias="VECTOR_MIN_SCORE", ge=-1.0, le=1.0)
+    vector_index_busy_timeout_seconds: int = Field(
+        default=10,
+        alias="VECTOR_INDEX_BUSY_TIMEOUT_SECONDS",
+        ge=1,
+        le=60,
+    )
+    vector_index_generation_retention: int = Field(
+        default=2,
+        alias="VECTOR_INDEX_GENERATION_RETENTION",
+        ge=1,
+        le=10,
+    )
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -79,6 +117,24 @@ class Settings(BaseSettings):
         if not str(value):
             raise ValueError("Path qiymati bo'sh bo'lishi mumkin emas.")
         return value
+
+    @field_validator("embedding_device", mode="after")
+    @classmethod
+    def validate_embedding_device(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized != "cpu":
+            raise ValueError("EMBEDDING_DEVICE faqat cpu bo'lishi mumkin.")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_related_values(self) -> "Settings":
+        if self.chunk_overlap_chars >= self.chunk_size_chars:
+            raise ValueError("CHUNK_OVERLAP_CHARS CHUNK_SIZE_CHARS dan kichik bo'lishi kerak.")
+        if self.chunk_min_chars > self.chunk_size_chars:
+            raise ValueError("CHUNK_MIN_CHARS CHUNK_SIZE_CHARS dan katta bo'lishi mumkin emas.")
+        if self.vector_search_top_k > self.vector_search_max_k:
+            raise ValueError("VECTOR_SEARCH_TOP_K VECTOR_SEARCH_MAX_K dan katta bo'lishi mumkin emas.")
+        return self
 
     @property
     def resolved_database_path(self) -> Path:

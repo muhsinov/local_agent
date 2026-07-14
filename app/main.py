@@ -13,18 +13,21 @@ from app.api.documents import router as documents_router
 from app.api.errors import ApiError, error_response
 from app.api.health import router as health_router
 from app.api.model import router as model_router
+from app.api.vector_search import router as vector_router
 from app.config import PROJECT_ROOT, Settings, get_settings
 from app.database import initialize_database
 from app.llm.ollama_client import OllamaClient
+from app.rag.index_manager import ensure_vector_directories, reconcile_vector_index
 from app.services.document_recovery_service import reconcile_document_quarantine
 
 
 def ensure_runtime_directories(settings: Settings) -> None:
     settings.resolved_upload_directory.mkdir(parents=True, exist_ok=True)
     settings.resolved_extracted_text_directory.mkdir(parents=True, exist_ok=True)
-    settings.resolved_vector_store_directory.mkdir(parents=True, exist_ok=True)
+    ensure_vector_directories(settings)
     initialize_database(settings)
     reconcile_document_quarantine(settings)
+    reconcile_vector_index(settings)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -43,6 +46,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 app.state.chat_semaphore = asyncio.Semaphore(1)
             if not hasattr(app.state, "document_semaphore") or app.state.document_semaphore is None:
                 app.state.document_semaphore = asyncio.Semaphore(1)
+            if not hasattr(app.state, "vector_index_semaphore") or app.state.vector_index_semaphore is None:
+                app.state.vector_index_semaphore = asyncio.Semaphore(1)
             ensure_runtime_directories(active_settings)
             yield
         finally:
@@ -54,6 +59,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.ollama_client = None
     app.state.chat_semaphore = None
     app.state.document_semaphore = None
+    app.state.vector_index_semaphore = None
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[
@@ -73,6 +79,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(model_router)
     app.include_router(chat_router)
     app.include_router(documents_router)
+    app.include_router(vector_router)
 
     @app.exception_handler(ApiError)
     async def handle_api_error(_: Request, exc: ApiError):
