@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 from time import perf_counter
 
 from pydantic import ValidationError
@@ -35,24 +36,31 @@ class ToolExecutor:
             return self._finalize(result, iteration)
 
         try:
-            timeout_seconds = min(
+            if remaining_seconds(deadline) <= 0:
+                raise AgentError(504, "AGENT_TOTAL_TIMEOUT", "Agent total timeoutga yetdi.")
+            now = time.monotonic()
+            tool_deadline = now + min(
                 self._settings.agent_tool_timeout_seconds,
                 tool.definition.timeout_seconds,
-                remaining_seconds(deadline),
             )
-            if timeout_seconds <= 0:
-                raise AgentError(504, "AGENT_TOTAL_TIMEOUT", "Agent total timeoutga yetdi.")
+            effective_deadline = min(deadline, tool_deadline)
             execute_async = getattr(type(tool), "execute_async", None)
             if execute_async is not None and execute_async is not ReadOnlyTool.execute_async:
+                timeout_seconds = remaining_seconds(effective_deadline)
+                if timeout_seconds <= 0:
+                    raise AgentError(504, "AGENT_TOTAL_TIMEOUT", "Agent total timeoutga yetdi.")
                 content = await asyncio.wait_for(tool.execute_async(validated, self._settings), timeout=timeout_seconds)
             else:
                 outcome = await self._coordinator.run(
                     tool.execute,
                     validated,
                     self._settings,
-                    timeout_seconds=timeout_seconds,
+                    operation_deadline=effective_deadline,
+                    timeout_code="AGENT_TOTAL_TIMEOUT" if deadline <= tool_deadline else "TOOL_EXECUTION_TIMEOUT",
                 )
                 if outcome.timed_out:
+                    if outcome.timeout_code == "AGENT_TOTAL_TIMEOUT":
+                        raise AgentError(504, "AGENT_TOTAL_TIMEOUT", "Agent total timeoutga yetdi.")
                     result = self._error_result(call.id, tool.definition.name, "TOOL_EXECUTION_TIMEOUT", started)
                     return self._finalize(result, iteration)
                 content = outcome.value

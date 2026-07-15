@@ -59,7 +59,7 @@ def test_executor_writes_timeout_audit(monkeypatch, tmp_path) -> None:
 
     monkeypatch.setattr("app.agent.executor.write_audit_log", fake_audit)
     settings = build_settings(tmp_path, AGENT_TOOL_TIMEOUT_SECONDS=1)
-    deadline = time.monotonic() + 0.02
+    deadline = time.monotonic() + 2
 
     async def scenario() -> None:
         executor = ToolExecutor(settings, ToolOperationCoordinator())
@@ -135,15 +135,17 @@ def test_executor_writes_oversized_argument_audit(monkeypatch, tmp_path) -> None
 
 
 def test_executor_uses_remaining_deadline_as_effective_timeout(tmp_path) -> None:
-    captured: dict[str, float] = {}
+    captured: dict[str, float | str] = {}
 
     class FakeCoordinator:
-        async def run(self, function, *args, timeout_seconds: float, **kwargs):
-            captured["timeout_seconds"] = timeout_seconds
+        async def run(self, function, *args, operation_deadline: float, timeout_code: str, **kwargs):
+            captured["operation_deadline"] = operation_deadline
+            captured["timeout_code"] = timeout_code
             return ToolOperationOutcome(value="ok")
 
     settings = build_settings(tmp_path, AGENT_TOOL_TIMEOUT_SECONDS=5)
-    deadline = time.monotonic() + 0.05
+    start = time.monotonic()
+    deadline = start + 0.05
     result = asyncio.run(
         ToolExecutor(settings, FakeCoordinator()).execute(
             tool=_Tool(timeout_seconds=10),
@@ -153,7 +155,8 @@ def test_executor_uses_remaining_deadline_as_effective_timeout(tmp_path) -> None
         )
     )
     assert result.ok is True
-    assert 0 < captured["timeout_seconds"] <= 0.06
+    assert start < captured["operation_deadline"] <= deadline
+    assert captured["timeout_code"] == "AGENT_TOTAL_TIMEOUT"
 
 
 def test_executor_does_not_start_tool_after_deadline(tmp_path) -> None:
@@ -213,13 +216,14 @@ def test_cancellation_does_not_release_sync_tool_slot_early(tmp_path) -> None:
                 await first
             except asyncio.CancelledError:
                 pass
-        blocked = await executor.execute(
-            tool=SlowTool(timeout_seconds=5),
-            call=ToolCall(id="2", name="demo_tool", arguments={"value": 1}),
-            iteration=1,
-            deadline=time.monotonic() + 0.02,
-        )
-        assert blocked.error_code == "TOOL_EXECUTION_TIMEOUT"
+        with pytest.raises(AgentError) as exc_info:
+            await executor.execute(
+                tool=SlowTool(timeout_seconds=5),
+                call=ToolCall(id="2", name="demo_tool", arguments={"value": 1}),
+                iteration=1,
+                deadline=time.monotonic() + 0.02,
+            )
+        assert exc_info.value.code == "AGENT_TOTAL_TIMEOUT"
         release.set()
         await coordinator.shutdown(timeout_seconds=0.2)
         result = await executor.execute(
@@ -229,5 +233,61 @@ def test_cancellation_does_not_release_sync_tool_slot_early(tmp_path) -> None:
             deadline=time.monotonic() + 0.2,
         )
         assert result.ok is True
+
+    asyncio.run(scenario())
+
+
+def test_executor_maps_agent_deadline_timeout(tmp_path) -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    class SlowTool(_Tool):
+        def execute(self, arguments, settings) -> str:
+            started.set()
+            release.wait(timeout=1)
+            return "done"
+
+    async def scenario() -> None:
+        settings = build_settings(tmp_path, AGENT_TOOL_TIMEOUT_SECONDS=5)
+        coordinator = ToolOperationCoordinator()
+        executor = ToolExecutor(settings, coordinator)
+        with pytest.raises(AgentError) as exc_info:
+            await executor.execute(
+                tool=SlowTool(timeout_seconds=10),
+                call=ToolCall(id="1", name="demo_tool", arguments={"value": 1}),
+                iteration=1,
+                deadline=time.monotonic() + 0.02,
+            )
+        assert exc_info.value.code == "AGENT_TOTAL_TIMEOUT"
+        release.set()
+        await coordinator.shutdown(timeout_seconds=0.2)
+
+    asyncio.run(scenario())
+    assert started.is_set() is True
+
+
+def test_executor_maps_tool_local_timeout(tmp_path) -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    class SlowTool(_Tool):
+        def execute(self, arguments, settings) -> str:
+            started.set()
+            release.wait(timeout=1)
+            return "done"
+
+    async def scenario() -> None:
+        settings = build_settings(tmp_path, AGENT_TOOL_TIMEOUT_SECONDS=5)
+        coordinator = ToolOperationCoordinator()
+        executor = ToolExecutor(settings, coordinator)
+        result = await executor.execute(
+            tool=SlowTool(timeout_seconds=1),
+            call=ToolCall(id="1", name="demo_tool", arguments={"value": 1}),
+            iteration=1,
+            deadline=time.monotonic() + 2,
+        )
+        assert result.error_code == "TOOL_EXECUTION_TIMEOUT"
+        release.set()
+        await coordinator.shutdown(timeout_seconds=0.2)
 
     asyncio.run(scenario())

@@ -3,6 +3,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, TypeVar
 
+from app.agent.helpers import remaining_seconds
 from app.rag.async_operation import run_blocking_operation_safely
 
 
@@ -13,6 +14,7 @@ T = TypeVar("T")
 class ToolOperationOutcome:
     value: Any = None
     timed_out: bool = False
+    timeout_code: str | None = None
 
 
 class ToolOperationCoordinator:
@@ -24,15 +26,17 @@ class ToolOperationCoordinator:
         self,
         function: Callable[..., T],
         *args,
-        timeout_seconds: float,
+        operation_deadline: float,
+        timeout_code: str,
         **kwargs,
     ) -> ToolOperationOutcome:
-        if timeout_seconds <= 0:
-            return ToolOperationOutcome(timed_out=True)
+        remaining = remaining_seconds(operation_deadline)
+        if remaining <= 0:
+            return ToolOperationOutcome(timed_out=True, timeout_code=timeout_code)
         try:
-            await asyncio.wait_for(self._lock.acquire(), timeout=timeout_seconds)
+            await asyncio.wait_for(self._lock.acquire(), timeout=remaining)
         except TimeoutError:
-            return ToolOperationOutcome(timed_out=True)
+            return ToolOperationOutcome(timed_out=True, timeout_code=timeout_code)
 
         released = False
 
@@ -43,6 +47,11 @@ class ToolOperationCoordinator:
             released = True
             if self._lock.locked():
                 self._lock.release()
+
+        remaining = remaining_seconds(operation_deadline)
+        if remaining <= 0:
+            release_slot()
+            return ToolOperationOutcome(timed_out=True, timeout_code=timeout_code)
 
         async def operation_wrapper() -> T:
             try:
@@ -65,9 +74,9 @@ class ToolOperationCoordinator:
         operation_task.add_done_callback(_consume_result)
 
         try:
-            value = await asyncio.wait_for(asyncio.shield(operation_task), timeout=timeout_seconds)
+            value = await asyncio.wait_for(asyncio.shield(operation_task), timeout=remaining_seconds(operation_deadline))
         except TimeoutError:
-            return ToolOperationOutcome(timed_out=True)
+            return ToolOperationOutcome(timed_out=True, timeout_code=timeout_code)
         except asyncio.CancelledError:
             raise
         return ToolOperationOutcome(value=value, timed_out=False)
