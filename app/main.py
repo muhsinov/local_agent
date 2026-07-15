@@ -17,6 +17,7 @@ from app.api.vector_search import router as vector_router
 from app.config import PROJECT_ROOT, Settings, get_settings
 from app.database import initialize_database
 from app.llm.ollama_client import OllamaClient
+from app.agent.tool_operation_coordinator import ToolOperationCoordinator
 from app.rag.index_manager import ensure_vector_directories, reconcile_vector_index
 from app.rag.operation_coordinator import VectorOperationCoordinator
 from app.services.document_recovery_service import reconcile_document_quarantine
@@ -49,11 +50,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 app.state.document_semaphore = asyncio.Semaphore(1)
             if not hasattr(app.state, "vector_operation_coordinator") or app.state.vector_operation_coordinator is None:
                 app.state.vector_operation_coordinator = VectorOperationCoordinator()
+            if not hasattr(app.state, "tool_operation_coordinator") or app.state.tool_operation_coordinator is None:
+                app.state.tool_operation_coordinator = ToolOperationCoordinator()
             ensure_runtime_directories(active_settings)
             yield
         finally:
             if getattr(app.state, "vector_operation_coordinator", None) is not None:
                 await app.state.vector_operation_coordinator.shutdown()
+            if getattr(app.state, "tool_operation_coordinator", None) is not None:
+                await app.state.tool_operation_coordinator.shutdown()
             if created_client:
                 await app.state.ollama_client.close()
 
@@ -63,6 +68,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.chat_semaphore = None
     app.state.document_semaphore = None
     app.state.vector_operation_coordinator = None
+    app.state.tool_operation_coordinator = None
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[

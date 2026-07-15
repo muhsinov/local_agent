@@ -9,6 +9,7 @@ from app.agent.loop import AgentLoop
 from app.agent.policy import ToolPolicy
 from app.agent.prompt import TOOL_AGENT_SYSTEM_PROMPT, render_tool_definitions
 from app.agent.registry import build_default_registry
+from app.agent.executor import ToolExecutor
 from app.api.errors import ApiError
 from app.llm.ollama_client import SYSTEM_PROMPT
 from app.llm.exceptions import (
@@ -121,7 +122,8 @@ async def chat(request: Request, payload: ChatRequest) -> ChatResponse:
     rag_retrieved_count = rag_result.context.retrieved_count if rag_result.context else 0
     try:
         if use_tools:
-            loop = AgentLoop(settings, registry, policy)
+            executor = ToolExecutor(settings, request.app.state.tool_operation_coordinator)
+            loop = AgentLoop(settings, registry, policy, executor)
             try:
                 agent_result = await loop.run(
                     user_message=payload.message,
@@ -181,6 +183,8 @@ async def chat(request: Request, payload: ChatRequest) -> ChatResponse:
             assistant_message=normalized_answer,
         )
     except ApiError:
+        raise
+    except asyncio.CancelledError:
         raise
     except OllamaModelNotFoundError:
         raise ApiError(503, "OLLAMA_MODEL_NOT_FOUND", "Kerakli Ollama modeli o'rnatilmagan.") from None
