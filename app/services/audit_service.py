@@ -62,6 +62,12 @@ def write_audit_log(
             "host_category",
             "session_reused",
             "session_created",
+            "request_id",
+            "status_code",
+            "rate_limit_group",
+            "limit",
+            "retry_after_seconds",
+            "draining",
         }
     }
     try:

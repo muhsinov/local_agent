@@ -18,6 +18,19 @@ Primary specification: [TZ.md](TZ.md)
 - frontend faqat `LOCAL_SESSION_REQUIRED`, `CSRF_TOKEN_REQUIRED` yoki `CSRF_TOKEN_INVALID` uchun bir marta bootstrap qilib original requestni retry qiladi
 - Origin va Sec-Fetch headerlari OS-level local process authentication emas; himoya remote web-origin va tasodifiy unauthenticated client threat modeliga mo'ljallangan
 
+## Phase 9 runtime resilience
+
+- request flood uchun chat, upload, approval, bootstrap, read va direct mutation guruhlarida fixed-window rate limit mavjud
+- valid session internal hash, non-browser client esa `local-api-client` identity bilan limitlanadi; raw token/session/IP ishlatilmaydi
+- limit oshsa `429 RATE_LIMIT_EXCEEDED`, `Retry-After`, `X-RateLimit-Limit`, `X-RateLimit-Remaining` va reset headerlari qaytadi
+- har response server-generated `X-Request-ID` oladi; request body va sensitive content safe logga yozilmaydi
+- rotating JSONL log `data/logs/local-agent.jsonl`da saqlanadi va repositoryga kirmaydi
+- JSON mutation body `REQUEST_BODY_MAX_BYTES` bilan Content-Length guardga ega; multipart upload streaming file limitidan foydalanadi
+- `/live` dependency-free liveness, `/ready` startup/database/vector/draining readiness beradi
+- shutdown draining holatiga o‘tadi, yangi expensive requestlarni `503 SERVER_DRAINING` bilan to‘xtatadi va umumiy deadline bilan mavjud ishlarni kutadi
+- API va static frontend security headerlari, static HTML uchun strict CSP yoqilgan
+- limiter va lifecycle single-process in-memory; multi-worker deployment uchun shared store kerak
+
 ## Phase 7 imkoniyatlari
 
 - document upload, preview va delete

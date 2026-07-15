@@ -13,6 +13,7 @@ from tests.conftest import FakeOllamaClient, build_settings
 def make_client(tmp_path: Path, **overrides):
     overrides.setdefault("DIRECT_VECTOR_MUTATIONS_ENABLED", False)
     overrides.setdefault("DIRECT_DOCUMENT_DELETE_ENABLED", False)
+    overrides.setdefault("RUNTIME_RESILIENCE_ENABLED", True)
     settings = build_settings(tmp_path, LOCAL_CONTROL_PLANE_ENABLED=True, **overrides)
     app = create_app(settings)
     app.state.ollama_client = FakeOllamaClient()
@@ -117,6 +118,66 @@ def test_api_token_cannot_bootstrap_without_browser_origin(tmp_path):
         response = client.post("/session/bootstrap", headers={"host": "localhost:8000", "authorization": f"Bearer {token}"})
     assert response.status_code == 403
     assert response.json()["detail"]["code"] == "LOCAL_ORIGIN_DENIED"
+
+
+def test_runtime_request_id_rate_limit_and_safe_headers(tmp_path):
+    client, settings = make_client(tmp_path, RATE_LIMIT_CHAT_REQUESTS=1, SAFE_LOG_DIRECTORY=tmp_path / "logs")
+    with client:
+        csrf = bootstrap(client)
+        first = client.post("/chat", headers={**local_headers(csrf), "x-request-id": "client-value"}, json={"message": "private chat"})
+        second = client.post("/chat", headers=local_headers(csrf), json={"message": "private chat"})
+        assert len(first.headers["x-request-id"]) == 32
+        assert first.headers["x-request-id"] != "client-value"
+        assert second.status_code == 429
+        assert second.headers["retry-after"]
+        assert second.headers["x-ratelimit-limit"] == "1"
+        assert second.headers["x-request-id"]
+        assert first.headers["x-content-type-options"] == "nosniff"
+        assert first.headers["x-frame-options"] == "DENY"
+    raw_log = (settings.resolved_safe_log_directory / "local-agent.jsonl").read_text(encoding="utf-8")
+    assert "private chat" not in raw_log
+    assert "client-value" not in raw_log
+
+
+def test_invalid_csrf_does_not_consume_rate_limit_bucket(tmp_path):
+    client, _ = make_client(tmp_path, RATE_LIMIT_CHAT_REQUESTS=1)
+    with client:
+        csrf = bootstrap(client)
+        invalid = client.post("/chat", headers=local_headers("bad"), json={"message": "x"})
+        valid = client.post("/chat", headers=local_headers(csrf), json={"message": "x"})
+        assert invalid.status_code == 403
+        assert valid.status_code == 200
+
+
+def test_oversized_json_is_rejected_but_liveness_is_dependency_free(tmp_path, monkeypatch):
+    client, _ = make_client(tmp_path, REQUEST_BODY_MAX_BYTES=16384)
+    with client:
+        csrf = bootstrap(client)
+        response = client.post(
+            "/chat",
+            headers={**local_headers(csrf), "content-type": "application/json"},
+            content=b"x" * 17000,
+        )
+        assert response.status_code == 413
+        monkeypatch.setattr("app.api.health.check_database", lambda settings: (_ for _ in ()).throw(RuntimeError("must not run")))
+        assert client.get("/live", headers={"host": "localhost:8000"}).json() == {"status": "live"}
+
+
+def test_ready_and_drain_states(tmp_path):
+    client, _ = make_client(tmp_path)
+    with client:
+        assert client.get("/ready", headers={"host": "localhost:8000"}).status_code == 200
+        csrf = bootstrap(client)
+        import asyncio
+
+        asyncio.run(client._transport.app.state.runtime_lifecycle.begin_drain())
+        draining = client.get("/ready", headers={"host": "localhost:8000"})
+        assert draining.status_code == 503
+        assert draining.json()["status"] == "draining"
+        assert client.get("/vector-index/status", headers={"host": "localhost:8000"}).status_code == 200
+        chat = client.post("/chat", headers=local_headers(csrf), json={"message": "late"})
+        assert chat.status_code == 503
+        assert chat.json()["detail"]["code"] == "SERVER_DRAINING"
 
 
 def test_mutations_require_session_and_csrf(tmp_path):

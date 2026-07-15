@@ -4,6 +4,7 @@ from starlette.responses import JSONResponse
 
 from app.security.local_control_plane.origin import validate_host, validate_origin, validate_referer
 from app.services.audit_service import write_audit_log
+from app.runtime.route_template import route_template
 
 
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
@@ -30,6 +31,8 @@ class LocalControlPlaneMiddleware(BaseHTTPMiddleware):
                 return self._deny(request, "LOCAL_ORIGIN_DENIED", "Bootstrap uchun local Origin yoki Referer talab qilinadi.", "origin_missing")
             if fetch_site is not None and fetch_site != "same-origin":
                 return self._deny(request, "LOCAL_ORIGIN_DENIED", "Local same-origin request talab qilinadi.", "sec_fetch_site")
+            request.state.runtime_identity = "bootstrap-global"
+            request.state.runtime_authenticated = False
             return await call_next(request)
 
         if request.method not in SAFE_METHODS:
@@ -49,8 +52,13 @@ class LocalControlPlaneMiddleware(BaseHTTPMiddleware):
 
                 if not settings.local_api_token or not hmac.compare_digest(token, settings.local_api_token):
                     return self._deny(request, "LOCAL_SESSION_REQUIRED", "Local session talab qilinadi.", "api_token")
+                request.state.runtime_identity = "local-api-client"
+                request.state.runtime_authenticated = True
             elif not request.app.state.local_session_store.has_session(raw_session):
                 return self._deny(request, "LOCAL_SESSION_REQUIRED", "Local session talab qilinadi.", "session")
+            else:
+                request.state.runtime_identity = request.app.state.local_session_store.session_identity(raw_session)
+                request.state.runtime_authenticated = True
 
             if settings.local_require_csrf and not (not is_browser and settings.local_allow_non_browser_clients):
                 csrf = request.headers.get("x-csrf-token")
@@ -58,26 +66,10 @@ class LocalControlPlaneMiddleware(BaseHTTPMiddleware):
                     return self._deny(request, "CSRF_TOKEN_REQUIRED", "CSRF token talab qilinadi.", "csrf_missing")
                 if not request.app.state.local_session_store.validate(raw_session, csrf):
                     return self._deny(request, "CSRF_TOKEN_INVALID", "CSRF token noto'g'ri.", "csrf_invalid")
+        if not hasattr(request.state, "runtime_identity"):
+            request.state.runtime_identity = request.app.state.local_session_store.session_identity(request.cookies.get("local_agent_session")) or "local-read"
+            request.state.runtime_authenticated = bool(request.state.runtime_identity != "local-read")
         return await call_next(request)
-
-    @staticmethod
-    def _route_template(request: Request) -> str:
-        path = request.url.path
-        if path in {"/chat", "/documents/upload", "/vector-index/rebuild", "/vector-search", "/session/bootstrap"}:
-            return path
-        if path == "/documents" or path == "/vector-index/status":
-            return path
-        if path.startswith("/documents/"):
-            suffix = path[len("/documents/") :].split("/", 1)
-            if suffix and suffix[0].isdigit():
-                return "/documents/{document_id}" + ("/text" if len(suffix) > 1 and suffix[1] == "text" else "/index" if len(suffix) > 1 and suffix[1] == "index" else "")
-        if path.startswith("/approvals/"):
-            suffix = path[len("/approvals/") :].split("/", 1)
-            if suffix and len(suffix) > 1:
-                return f"/approvals/{{approval_id}}/{suffix[1]}"
-            if suffix:
-                return "/approvals/{approval_id}"
-        return path if path.startswith("/") and path.count("/") <= 1 else "<local-route>"
 
     @staticmethod
     def _deny(request: Request, code: str, message: str, reason: str):
@@ -89,7 +81,7 @@ class LocalControlPlaneMiddleware(BaseHTTPMiddleware):
                 status=code,
                 arguments={
                     "method": request.method,
-                    "route_template": LocalControlPlaneMiddleware._route_template(request),
+                    "route_template": route_template(request),
                     "reason_code": reason,
                     "browser": bool(request.headers.get("origin") or request.headers.get("referer")),
                     "session_present": bool(request.cookies.get("local_agent_session")),

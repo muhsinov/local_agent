@@ -79,6 +79,18 @@ class LocalSessionStore:
             record = self._sessions.get(session_hash)
             return bool(record and secrets_equal(record.session_hash, session_hash))
 
+    def session_identity(self, raw_session: str | None) -> str | None:
+        if not raw_session:
+            return None
+        now = self._now()
+        session_hash = hash_secret(raw_session)
+        with self._lock:
+            self._cleanup_locked(now)
+            record = self._sessions.get(session_hash)
+            if record is None or not secrets_equal(record.session_hash, session_hash):
+                return None
+            return record.session_hash
+
     def active_count(self) -> int:
         with self._lock:
             self._cleanup_locked(self._now())

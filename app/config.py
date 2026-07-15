@@ -93,6 +93,28 @@ class Settings(BaseSettings):
     local_api_token: str = Field(default="", alias="LOCAL_API_TOKEN")
     direct_vector_mutations_enabled: bool = Field(default=False, alias="DIRECT_VECTOR_MUTATIONS_ENABLED")
     direct_document_delete_enabled: bool = Field(default=False, alias="DIRECT_DOCUMENT_DELETE_ENABLED")
+    runtime_resilience_enabled: bool = Field(default=True, alias="RUNTIME_RESILIENCE_ENABLED")
+    request_id_bytes: int = Field(default=16, alias="REQUEST_ID_BYTES", ge=8, le=32)
+    request_body_max_bytes: int = Field(default=262144, alias="REQUEST_BODY_MAX_BYTES", ge=16384, le=1048576)
+    rate_limit_enabled: bool = Field(default=True, alias="RATE_LIMIT_ENABLED")
+    rate_limit_chat_requests: int = Field(default=10, alias="RATE_LIMIT_CHAT_REQUESTS", ge=1, le=1000)
+    rate_limit_chat_window_seconds: int = Field(default=60, alias="RATE_LIMIT_CHAT_WINDOW_SECONDS", ge=1, le=86400)
+    rate_limit_upload_requests: int = Field(default=5, alias="RATE_LIMIT_UPLOAD_REQUESTS", ge=1, le=1000)
+    rate_limit_upload_window_seconds: int = Field(default=600, alias="RATE_LIMIT_UPLOAD_WINDOW_SECONDS", ge=1, le=86400)
+    rate_limit_approval_requests: int = Field(default=30, alias="RATE_LIMIT_APPROVAL_REQUESTS", ge=1, le=1000)
+    rate_limit_approval_window_seconds: int = Field(default=60, alias="RATE_LIMIT_APPROVAL_WINDOW_SECONDS", ge=1, le=86400)
+    rate_limit_bootstrap_requests: int = Field(default=20, alias="RATE_LIMIT_BOOTSTRAP_REQUESTS", ge=1, le=1000)
+    rate_limit_bootstrap_window_seconds: int = Field(default=60, alias="RATE_LIMIT_BOOTSTRAP_WINDOW_SECONDS", ge=1, le=86400)
+    rate_limit_read_requests: int = Field(default=120, alias="RATE_LIMIT_READ_REQUESTS", ge=1, le=1000)
+    rate_limit_read_window_seconds: int = Field(default=60, alias="RATE_LIMIT_READ_WINDOW_SECONDS", ge=1, le=86400)
+    rate_limit_direct_mutation_requests: int = Field(default=5, alias="RATE_LIMIT_DIRECT_MUTATION_REQUESTS", ge=1, le=1000)
+    rate_limit_direct_mutation_window_seconds: int = Field(default=300, alias="RATE_LIMIT_DIRECT_MUTATION_WINDOW_SECONDS", ge=1, le=86400)
+    runtime_drain_timeout_seconds: int = Field(default=60, alias="RUNTIME_DRAIN_TIMEOUT_SECONDS", ge=5, le=300)
+    runtime_reject_during_drain: bool = Field(default=True, alias="RUNTIME_REJECT_DURING_DRAIN")
+    safe_logging_enabled: bool = Field(default=True, alias="SAFE_LOGGING_ENABLED")
+    safe_log_max_bytes: int = Field(default=5_242_880, alias="SAFE_LOG_MAX_BYTES", ge=1_048_576, le=52_428_800)
+    safe_log_backup_count: int = Field(default=3, alias="SAFE_LOG_BACKUP_COUNT", ge=1, le=10)
+    safe_log_directory: Path = Field(default=Path("data/logs"), alias="SAFE_LOG_DIRECTORY")
     embedding_model_name: str = Field(
         default="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
         alias="EMBEDDING_MODEL_NAME",
@@ -163,6 +185,7 @@ class Settings(BaseSettings):
         "upload_directory",
         "extracted_text_directory",
         "vector_store_directory",
+        "safe_log_directory",
         mode="after",
     )
     @classmethod
@@ -222,6 +245,10 @@ class Settings(BaseSettings):
     @property
     def resolved_vector_store_directory(self) -> Path:
         return self.resolve_path(self.vector_store_directory)
+
+    @property
+    def resolved_safe_log_directory(self) -> Path:
+        return self.resolve_path(self.safe_log_directory)
 
 
 @lru_cache(maxsize=1)

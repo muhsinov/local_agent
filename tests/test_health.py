@@ -17,6 +17,7 @@ def build_test_settings(tmp_path: Path) -> Settings:
         EXTRACTED_TEXT_DIRECTORY=tmp_path / "extracted",
         VECTOR_STORE_DIRECTORY=tmp_path / "vector_store",
         LOCAL_CONTROL_PLANE_ENABLED=False,
+        RUNTIME_RESILIENCE_ENABLED=False,
     )
 
 

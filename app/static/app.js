@@ -100,6 +100,18 @@ function apiMessage(payload, fallback) {
   return payload?.detail?.message || fallback;
 }
 
+function resilienceMessage(response, payload, fallback) {
+  const code = payload?.detail?.code;
+  if (response?.status === 429 || code === "RATE_LIMIT_EXCEEDED") {
+    const retryAfter = response.headers?.get?.("Retry-After") || "keyinroq";
+    return `So'rovlar limiti oshdi. ${retryAfter} soniyadan keyin qayta urinib ko'ring.`;
+  }
+  if (response?.status === 503 && code === "SERVER_DRAINING") {
+    return "Server xavfsiz shutdown jarayonida. Keyinroq qayta urinib ko'ring.";
+  }
+  return apiMessage(payload, fallback);
+}
+
 function parseDocumentIds(rawValue) {
   const raw = rawValue.trim();
   if (!raw) {
@@ -274,6 +286,9 @@ async function pollApprovalStatus() {
     const response = await localFetch(`/approvals/${pendingApproval.approvalId}`);
     const payload = await safeJson(response);
     if (!response.ok || !payload) {
+      if (response.status === 429 || payload?.detail?.code === "SERVER_DRAINING") {
+        approvalMeta.textContent = resilienceMessage(response, payload, "Approval statusi vaqtincha mavjud emas.");
+      }
       return;
     }
     if (pendingApproval) {
@@ -311,12 +326,12 @@ async function pollApprovalStatus() {
             return;
           }
           if (resultResponse.status >= 400 && resultResponse.status < 500 && resultResponse.status !== 429) {
-            approvalMeta.textContent = apiMessage(result, "Approval resultini olish rad etildi.");
+            approvalMeta.textContent = resilienceMessage(resultResponse, result, "Approval resultini olish rad etildi.");
             pendingApproval.nonce = null;
             clearApprovalPolling();
             return;
           }
-          approvalMeta.textContent = "Final result vaqtincha mavjud emas; qayta uriniladi.";
+          approvalMeta.textContent = resilienceMessage(resultResponse, result, "Final result vaqtincha mavjud emas; qayta uriniladi.");
           return;
         } catch (error) {
           approvalMeta.textContent = "Final resultga ulanish vaqtincha imkonsiz; qayta uriniladi.";
@@ -528,7 +543,10 @@ async function submitChat() {
       return;
     }
     if (!response.ok) {
-      appendMessage(apiMessage(payload, "Noma'lum xatolik yuz berdi."), "system");
+      appendMessage(resilienceMessage(response, payload, "Noma'lum xatolik yuz berdi."), "system");
+      if (response.status === 429 || payload?.detail?.code === "SERVER_DRAINING") {
+        chatStatus.textContent = resilienceMessage(response, payload, "Request vaqtincha bajarilmadi.");
+      }
       return;
     }
     conversationId = payload.conversation_id;
@@ -595,7 +613,7 @@ async function refreshDocuments() {
     const response = await localFetch("/documents?limit=50&offset=0");
     const payload = await safeJson(response);
     if (!payload || !response.ok) {
-      setDocumentStatus(apiMessage(payload, "Document listni yuklab bo'lmadi."));
+      setDocumentStatus(resilienceMessage(response, payload, "Document listni yuklab bo'lmadi."));
       return;
     }
     documentList.textContent = "";
@@ -649,7 +667,7 @@ async function previewDocument(documentId) {
   const response = await localFetch(`/documents/${documentId}/text?limit=5000`);
   const payload = await safeJson(response);
   if (!payload || !response.ok) {
-    documentPreview.textContent = apiMessage(payload, "Previewni yuklab bo'lmadi.");
+    documentPreview.textContent = resilienceMessage(response, payload, "Previewni yuklab bo'lmadi.");
     previewMeta.textContent = "";
     return;
   }
@@ -664,7 +682,7 @@ async function deleteDocument(documentId, fileName) {
   const response = await localFetch(`/documents/${documentId}?confirm=true`, { method: "DELETE" });
   const payload = await safeJson(response);
   if (!response.ok) {
-    setDocumentStatus(apiMessage(payload, "Delete bajarilmadi."));
+    setDocumentStatus(resilienceMessage(response, payload, "Delete bajarilmadi."));
     return;
   }
   documentPreview.textContent = "Preview hali tanlanmagan.";
@@ -690,7 +708,7 @@ async function uploadDocument(event) {
     const response = await localFetch("/documents/upload", { method: "POST", body: formData });
     const payload = await safeJson(response);
     if (!payload || !response.ok) {
-      setDocumentStatus(apiMessage(payload, "Upload bajarilmadi."));
+      setDocumentStatus(resilienceMessage(response, payload, "Upload bajarilmadi."));
       return;
     }
     setDocumentStatus(`Yuklandi: ${payload.file_name}`);
@@ -712,7 +730,7 @@ async function rebuildIndex() {
     const response = await localFetch("/vector-index/rebuild", { method: "POST" });
     const payload = await safeJson(response);
     if (!payload || !response.ok) {
-      setDocumentStatus(apiMessage(payload, "Vector indexni qayta qurib bo'lmadi."));
+      setDocumentStatus(resilienceMessage(response, payload, "Vector indexni qayta qurib bo'lmadi."));
       return;
     }
     setDocumentStatus(`Index ready: ${shortGeneration(payload.generation_id)}`);
@@ -729,7 +747,7 @@ async function indexDocument(documentId, fileName) {
     const response = await localFetch(`/documents/${documentId}/index`, { method: "POST" });
     const payload = await safeJson(response);
     if (!payload || !response.ok) {
-      setDocumentStatus(apiMessage(payload, "Document index bajarilmadi."));
+      setDocumentStatus(resilienceMessage(response, payload, "Document index bajarilmadi."));
       return;
     }
     setDocumentStatus(`Index ready: ${shortGeneration(payload.generation_id)}`);
