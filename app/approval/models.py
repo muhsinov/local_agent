@@ -26,3 +26,4 @@ class ApprovalRecord(ApprovalRequest):
     error_code: str | None
     execution_result_json: str | None
     execution_deadline_at: str | None
+    result_message_id: int | None

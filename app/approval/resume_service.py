@@ -5,6 +5,7 @@ from app.agent.errors import AgentError
 from app.approval.errors import ApprovalError
 from app.agent.parser import parse_agent_response
 from app.rag.exceptions import RagError
+from app.rag.citation import normalize_citations
 from app.rag.prompt_builder import DOCUMENTS_PREFIX, DOCUMENTS_SUFFIX, calculate_prompt_budget
 from app.services.conversation_service import get_recent_messages
 
@@ -133,4 +134,14 @@ class ApprovalResumeService:
             raise ApprovalError(422, "APPROVAL_RESUME_INVALID", "Resume modeli faqat final JSON qaytarishi kerak.")
         if len(payload) > self._settings.max_chat_message_chars:
             raise ApprovalError(422, "APPROVAL_RESUME_INVALID", "Resume final javobi uzunlik limitidan oshdi.")
-        return payload, result.usage, rag_result
+        source_count = len(rag_result.context.sources) if rag_result.context else 0
+        normalized_answer, invalid_removed, citations_present = normalize_citations(payload, source_count)
+        rag_result = rag_result.__class__(
+            enabled=rag_result.enabled,
+            used=rag_result.used,
+            fallback=rag_result.fallback,
+            context=rag_result.context,
+            citations_present=citations_present,
+            invalid_citations_removed=invalid_removed,
+        )
+        return normalized_answer, result.usage, rag_result

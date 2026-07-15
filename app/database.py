@@ -5,7 +5,7 @@ from pathlib import Path
 from app.config import Settings, get_settings
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 EXPECTED_TABLES = (
     "conversations",
     "messages",
@@ -77,6 +77,7 @@ APPROVAL_REQUEST_COLUMNS = {
     "error_code",
     "execution_result_json",
     "execution_deadline_at",
+    "result_message_id",
 }
 
 
@@ -237,10 +238,22 @@ def create_approval_request_tables(connection: sqlite3.Connection) -> None:
             error_code TEXT NULL,
             execution_result_json TEXT NULL,
             execution_deadline_at TEXT NULL,
+            result_message_id INTEGER NULL,
             FOREIGN KEY(conversation_id) REFERENCES conversations(id)
         );
         """
     )
+
+
+def migrate_approval_requests_table(connection: sqlite3.Connection) -> None:
+    """Repair approval columns for every existing schema, including bad stamps."""
+
+    create_approval_request_tables(connection)
+    columns = get_table_columns(connection, "approval_requests")
+    if "execution_deadline_at" not in columns:
+        connection.execute("ALTER TABLE approval_requests ADD COLUMN execution_deadline_at TEXT NULL;")
+    if "result_message_id" not in columns:
+        connection.execute("ALTER TABLE approval_requests ADD COLUMN result_message_id INTEGER NULL;")
     connection.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_approval_requests_status
@@ -314,9 +327,7 @@ def create_tables(connection: sqlite3.Connection) -> None:
     create_document_indexes(connection)
     create_document_chunk_tables(connection)
     ensure_vector_index_state_row(connection)
-    create_approval_request_tables(connection)
-    if "execution_deadline_at" not in get_table_columns(connection, "approval_requests"):
-        connection.execute("ALTER TABLE approval_requests ADD COLUMN execution_deadline_at TEXT NULL;")
+    migrate_approval_requests_table(connection)
     create_schema_version_table(connection)
 
 
@@ -475,7 +486,7 @@ def migrate_schema(connection: sqlite3.Connection) -> None:
     migrate_documents_table_to_v2(connection)
     create_document_chunk_tables(connection)
     ensure_vector_index_state_row(connection)
-    create_approval_request_tables(connection)
+    migrate_approval_requests_table(connection)
     create_schema_version_table(connection)
     set_schema_version(connection, SCHEMA_VERSION)
 

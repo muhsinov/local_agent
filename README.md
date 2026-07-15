@@ -133,6 +133,7 @@ Bu faqat model avval cache qilingan bo'lsa ishlaydi.
 - `POST /chat`
 - `GET /approvals/{id}`
 - `POST /approvals/{id}/approve`
+- `POST /approvals/{id}/result`
 - `POST /approvals/{id}/reject`
 - `POST /documents/upload`
 - `GET /documents`
@@ -177,12 +178,15 @@ Bu faqat model avval cache qilingan bo'lsa ishlaydi.
 - audit faqat safe metadata yozadi; raw arguments va raw results saqlanmaydi
 - approval lifecycle: `pending -> executing -> executed|failed` yoki `pending -> rejected|expired`
 - approval execution lifecycle request'dan mustaqil coordinator task tomonidan boshqariladi; cancellation taskni bekor qilmaydi
+- approval schema v6 `execution_deadline_at` va `result_message_id` bilan eski v4/v5 database'larni transactional repair qiladi
 - stale `executing` approval startup/request-time recovery'da `APPROVAL_EXECUTION_INTERRUPTED` bilan failed qilinadi
 - rebuild caller timeout'da `202/executing` qaytarishi mumkin; real operation tugamaguncha approval failed qilinmaydi
+- `POST /approvals/{id}/result` exact persisted assistant message'ni qaytaradi va write actionni qayta bajarmaydi
 - resume prompt `<documents>` va `<approved_action_result>` boundary'larida untrusted XML-safe data sifatida bounded qilinadi
 - resume system, original user, action, RAG va newest history bitta unified prompt budgetda hisoblanadi
 - final exchange va approval `executed` CAS bitta SQLite transactionda yoziladi
 - approval o'chirilgan bo'lsa chat/approve/reject stable `403 APPROVALS_DISABLED` qaytaradi
+- resume RAG citationlari source count bilan normalize qilinadi; RAG bo'lmagan resume citation markerlarini olib tashlaydi
 - nonce faqat creation response'da qaytadi, localStorage/sessionStorage'da saqlanmaydi
 - exact action binding canonical argument hash bilan tekshiriladi
 - known limitation: write action bajarilib, keyingi final response generation yoki DB save yiqilishi mumkin; bunday approval `failed` bo'ladi

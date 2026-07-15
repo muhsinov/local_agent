@@ -27,6 +27,7 @@ def _row_to_record(row: sqlite3.Row) -> ApprovalRecord:
         error_code=str(row["error_code"]) if row["error_code"] is not None else None,
         execution_result_json=str(row["execution_result_json"]) if row["execution_result_json"] is not None else None,
         execution_deadline_at=str(row["execution_deadline_at"]) if row["execution_deadline_at"] is not None else None,
+        result_message_id=int(row["result_message_id"]) if row["result_message_id"] is not None else None,
     )
 
 
@@ -180,6 +181,59 @@ def get_approval(settings, approval_id: str) -> ApprovalRecord | None:
     with connection_scope(settings) as connection:
         row = connection.execute("SELECT * FROM approval_requests WHERE id = ?;", (approval_id,)).fetchone()
     return _row_to_record(row) if row else None
+
+
+def get_approval_result_message(settings, approval: ApprovalRecord) -> str | None:
+    if approval.result_message_id is None:
+        return None
+    with connection_scope(settings) as connection:
+        row = connection.execute(
+            "SELECT content FROM messages WHERE id = ? AND role = 'assistant';",
+            (approval.result_message_id,),
+        ).fetchone()
+    return str(row["content"]) if row else None
+
+
+def get_approval_result_sources(settings, approval: ApprovalRecord) -> list[dict]:
+    try:
+        metadata = json.loads(approval.execution_result_json or "{}")
+    except json.JSONDecodeError:
+        return []
+    chunk_ids = [int(value) for value in metadata.get("source_chunk_ids", []) if isinstance(value, int)]
+    if not chunk_ids:
+        return []
+    placeholders = ",".join("?" for _ in chunk_ids)
+    with connection_scope(settings) as connection:
+        rows = connection.execute(
+            f"""
+            SELECT dc.id AS chunk_id, dc.document_id, d.file_name, dc.chunk_index,
+                   dc.start_char, dc.end_char, dc.text
+            FROM document_chunks dc
+            JOIN documents d ON d.id = dc.document_id
+            WHERE dc.id IN ({placeholders});
+            """,
+            tuple(chunk_ids),
+        ).fetchall()
+    by_id = {int(row["chunk_id"]): row for row in rows}
+    sources = []
+    for index, chunk_id in enumerate(chunk_ids, start=1):
+        row = by_id.get(chunk_id)
+        if row is None:
+            continue
+        sources.append(
+            {
+                "citation": f"[{index}]",
+                "chunk_id": int(row["chunk_id"]),
+                "document_id": int(row["document_id"]),
+                "file_name": str(row["file_name"]),
+                "chunk_index": int(row["chunk_index"]),
+                "score": 0.0,
+                "start_char": int(row["start_char"]),
+                "end_char": int(row["end_char"]),
+                "excerpt": str(row["text"]),
+            }
+        )
+    return sources
 
 
 def mark_executing(settings, approval_id: str) -> int:

@@ -1,3 +1,4 @@
+import json
 import sqlite3
 
 from app.config import Settings
@@ -104,6 +105,7 @@ def save_exchange_and_finalize_approval(
     conversation_id: int | None,
     user_message: str,
     assistant_message: str,
+    execution_result: dict | None = None,
 ) -> int:
     """Persist the exchange and execute the approval CAS in one transaction."""
 
@@ -124,18 +126,21 @@ def save_exchange_and_finalize_approval(
                 "INSERT INTO messages (conversation_id, role, content) VALUES (?, 'user', ?);",
                 (active_conversation_id, user_message),
             )
-            connection.execute(
+            assistant_cursor = connection.execute(
                 "INSERT INTO messages (conversation_id, role, content) VALUES (?, 'assistant', ?);",
                 (active_conversation_id, assistant_message),
             )
+            result_message_id = int(assistant_cursor.lastrowid)
+            safe_execution_result = execution_result or {"ok": True}
             changed = connection.execute(
                 """
                 UPDATE approval_requests
                 SET status = 'executed', completed_at = CURRENT_TIMESTAMP,
-                    error_code = NULL, execution_result_json = '{"ok":true}'
+                    conversation_id = ?, result_message_id = ?,
+                    error_code = NULL, execution_result_json = ?
                 WHERE id = ? AND status = 'executing';
                 """,
-                (approval_id,),
+                (active_conversation_id, result_message_id, json.dumps(safe_execution_result, ensure_ascii=False), approval_id),
             ).rowcount
             if changed != 1:
                 raise ApprovalFinalizationError(

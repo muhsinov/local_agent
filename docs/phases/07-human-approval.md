@@ -7,18 +7,21 @@
 - Argument hash: canonical JSON `sha256` bilan hash qilinadi; approve vaqtida qayta canonical qilinib qayta tekshiriladi.
 - One-time nonce: `secrets.token_urlsafe(APPROVAL_NONCE_BYTES)`; database'da faqat `nonce_sha256` saqlanadi.
 - Expiry: `pending` request `APPROVAL_EXPIRY_SECONDS` dan keyin `expired` bo'ladi.
-- Schema version: v5; `execution_deadline_at` stale `executing` recovery uchun ishlatiladi.
+- Schema version: v6; `execution_deadline_at` stale `executing` recovery, `result_message_id` exact final message linkage uchun ishlatiladi.
 - Atomic state transition: `pending -> executing` va `pending -> rejected` compare-and-set SQL bilan bajariladi; terminal update faqat `executing` row'ga tegadi.
 - Operation ownership: approval action, resume, persistence va finalization `ApprovalOperationCoordinator` task'iga tegishli; HTTP request bekor bo'lsa task shield ostida davom etadi.
 - Recovery: process restart'dan keyin deadline o'tgan active-less `executing` approval `failed/APPROVAL_EXECUTION_INTERRUPTED` bo'ladi; write action avtomatik qayta bajarilmaydi.
 - Rebuild timeout: caller kutish limiti tugasa approval `202/executing`; vector operation real tugamaguncha background lifecycle davom etadi.
+- Result delivery: `POST /approvals/{id}/result` nonce va local-origin tekshiruvdan keyin exact persisted assistant message'ni qaytaradi; action qayta bajarilmaydi.
 - Idempotency: `executed`, `rejected`, `failed`, `expired` holatlar qayta approve/reject qilinmaydi.
 - Rejection va cancellation: reject write actionni bajarmaydi; cancelled chat/approve partial exchange yozmaydi.
 - Resumable flow: approve'dan keyin write action bajariladi, so'ng final-only resume prompt bilan bitta final javob olinadi.
 - Resume safety: system safety prompt, `<documents>` va `<approved_action_result>` XML-safe, untrusted data sifatida bounded; qo'shimcha tool/action taqiqlangan.
 - Resume budget: safety prompt, original user message, action result, RAG context va newest history bitta unified `max_input_chars` budgetda joylashtiriladi.
+- Resume citations: RAG bo'lsa citation validator source count bilan normalize qiladi; RAG bo'lmasa citation markerlari saqlanmaydi.
 - Timeout: caller `APPROVAL_EXECUTION_TIMEOUT_SECONDS` kutadi; timeout action'ni bekor qilmaydi.
 - Privacy: audit nonce, nonce hash, raw arguments, original user message, final answer va raw tool resultni saqlamaydi.
 - Origin policy: local browser origin ruxsat etiladi; origin yo'q bo'lsa nonce yetarli.
 - No shell/destructive tools: shell, Python execution, web/browser, delete, arbitrary filesystem write va background autonomous action yo'q.
 - Limitation: write action muvaffaqiyatli bo'lib, keyingi final model javobi yoki DB save muvaffaqiyatsiz tugashi mumkin; bunday holat `failed` sifatida saqlanadi va action avtomatik retry qilinmaydi.
+- Refresh limitation: URL hash'da faqat approval ID qoladi; nonce bo'lmasa refresh statusni ko'rsatadi, lekin `/result` yoki approve/reject qayta chaqirmaydi.

@@ -142,3 +142,54 @@ def test_approve_reject_with_invalid_nonce_is_rejected(tmp_path) -> None:
 
     assert response.status_code == 403
     assert response.json()["detail"]["code"] == "APPROVAL_INVALID_NONCE"
+
+
+def test_result_endpoint_returns_exact_persisted_assistant_message(tmp_path) -> None:
+    client = SequencedOllamaClient(
+        [
+            _response('{"type":"tool_call","calls":[{"id":"call_1","name":"rename_conversation","arguments":{"conversation_id":1,"new_title":"Project Alpha"}}]}'),
+            _response('{"type":"final","answer":"Final [9]."}'),
+        ]
+    )
+    app, settings = build_test_app(tmp_path, client, TOOLS_ENABLED=True)
+
+    with TestClient(app):
+        conversation_id = save_exchange(settings, None, "Eski", "Javob")
+
+    with TestClient(app) as http:
+        approval = http.post(
+            "/chat",
+            json={"message": "conversation 1 nomini Project Alpha qil", "conversation_id": conversation_id, "use_tools": True},
+        ).json()["approval"]
+        approve = http.post(f"/approvals/{approval['approval_id']}/approve", json={"nonce": approval["nonce"]})
+        result = http.post(f"/approvals/{approval['approval_id']}/result", json={"nonce": approval["nonce"]})
+
+    assert approve.status_code == 200
+    assert result.status_code == 200
+    assert result.json()["answer"] == "Final."
+    assert result.json()["conversation_id"] == conversation_id
+    with sqlite3.connect(settings.resolved_database_path) as connection:
+        row = connection.execute(
+            "SELECT conversation_id, result_message_id, status FROM approval_requests WHERE id = ?;",
+            (approval["approval_id"],),
+        ).fetchone()
+        message = connection.execute("SELECT role, content FROM messages WHERE id = ?;", (row[1],)).fetchone()
+    assert row[0] == conversation_id
+    assert row[2] == "executed"
+    assert message == ("assistant", "Final.")
+
+
+def test_result_endpoint_rejects_wrong_nonce(tmp_path) -> None:
+    client = SequencedOllamaClient(
+        [_response('{"type":"tool_call","calls":[{"id":"call_1","name":"rename_conversation","arguments":{"conversation_id":1,"new_title":"Project Alpha"}}]}')]
+    )
+    app, settings = build_test_app(tmp_path, client, TOOLS_ENABLED=True)
+    with TestClient(app) as http:
+        conversation_id = save_exchange(settings, None, "Eski", "Javob")
+        approval = http.post(
+            "/chat",
+            json={"message": "rename", "conversation_id": conversation_id, "use_tools": True},
+        ).json()["approval"]
+        result = http.post(f"/approvals/{approval['approval_id']}/result", json={"nonce": "bad"})
+    assert result.status_code == 403
+    assert result.json()["detail"]["code"] == "APPROVAL_INVALID_NONCE"

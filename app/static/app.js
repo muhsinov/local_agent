@@ -37,6 +37,7 @@ let conversationId = null;
 let pendingApproval = null;
 let approvalCountdownTimer = null;
 let approvalStatusPollTimer = null;
+let approvalResultDelivered = false;
 
 async function safeJson(response) {
   try {
@@ -156,20 +157,53 @@ function renderToolSummaries(items) {
   });
 }
 
-function clearApprovalTimer() {
+function clearApprovalCountdown() {
   if (approvalCountdownTimer !== null) {
     window.clearInterval(approvalCountdownTimer);
     approvalCountdownTimer = null;
   }
+}
+
+function clearApprovalPolling() {
   if (approvalStatusPollTimer !== null) {
     window.clearInterval(approvalStatusPollTimer);
     approvalStatusPollTimer = null;
   }
 }
 
+function startApprovalPolling() {
+  if (approvalStatusPollTimer === null) {
+    approvalStatusPollTimer = window.setInterval(pollApprovalStatus, 1000);
+  }
+}
+
+function startApprovalCountdown(expiresAt) {
+  if (approvalCountdownTimer !== null) {
+    return;
+  }
+  const refreshMeta = () => {
+    const expiresMs = Date.parse(expiresAt);
+    const seconds = Number.isNaN(expiresMs) ? null : Math.max(0, Math.floor((expiresMs - Date.now()) / 1000));
+    approvalMeta.textContent = seconds === null ? `expires=${expiresAt}` : `expires in ${seconds}s`;
+    if (seconds === 0) {
+      approvalBadge.textContent = "expired";
+      approveButton.disabled = true;
+      rejectButton.disabled = true;
+      if (pendingApproval) {
+        pendingApproval.nonce = null;
+      }
+      clearApprovalCountdown();
+    }
+  };
+  refreshMeta();
+  approvalCountdownTimer = window.setInterval(refreshMeta, 1000);
+}
+
 function clearApprovalState() {
-  clearApprovalTimer();
+  clearApprovalCountdown();
+  clearApprovalPolling();
   pendingApproval = null;
+  approvalResultDelivered = false;
   if (window.location.hash.startsWith("#approval=")) {
     window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
   }
@@ -188,10 +222,42 @@ async function pollApprovalStatus() {
     if (!response.ok || !payload) {
       return;
     }
+    if (pendingApproval) {
+      pendingApproval.toolName = payload.tool_name;
+      pendingApproval.expiresAt = payload.expires_at;
+    }
     approvalBadge.textContent = payload.status;
     approvalMeta.textContent = payload.error_code || `expires=${payload.expires_at}`;
-    if (["executed", "failed", "rejected", "expired"].includes(payload.status)) {
-      clearApprovalTimer();
+    if (payload.status === "pending") {
+      startApprovalCountdown(payload.expires_at);
+    }
+    if (payload.status === "executed") {
+      if (pendingApproval?.nonce && !approvalResultDelivered) {
+        const resultResponse = await fetch(`/approvals/${pendingApproval.approvalId}/result`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ nonce: pendingApproval.nonce }),
+        });
+        const result = await safeJson(resultResponse);
+        if (resultResponse.ok && result?.answer && !approvalResultDelivered) {
+          approvalResultDelivered = true;
+          conversationId = result.conversation_id || conversationId;
+          appendMessage(result.answer, "system");
+        }
+      }
+      clearApprovalCountdown();
+      clearApprovalPolling();
+      pendingApproval.nonce = null;
+      approveButton.disabled = true;
+      rejectButton.disabled = true;
+      if (!approvalResultDelivered) {
+        approvalMeta.textContent = "Action completed; final response conversation'da saqlandi.";
+      }
+      return;
+    }
+    if (["failed", "rejected", "expired"].includes(payload.status)) {
+      clearApprovalCountdown();
+      clearApprovalPolling();
       pendingApproval.nonce = null;
       approveButton.disabled = true;
       rejectButton.disabled = true;
@@ -202,7 +268,9 @@ async function pollApprovalStatus() {
 }
 
 function renderApprovalCard(approval) {
-  clearApprovalTimer();
+  clearApprovalCountdown();
+  clearApprovalPolling();
+  approvalResultDelivered = false;
   pendingApproval = {
     approvalId: approval.approval_id,
     nonce: approval.nonce,
@@ -214,23 +282,7 @@ function renderApprovalCard(approval) {
   approvalBadge.textContent = "pending";
   approvalSummary.textContent = approval.safe_summary;
 
-  const refreshMeta = () => {
-    const expiresMs = Date.parse(approval.expires_at);
-    const seconds = Number.isNaN(expiresMs) ? null : Math.max(0, Math.floor((expiresMs - Date.now()) / 1000));
-    approvalMeta.textContent = seconds === null ? `expires=${approval.expires_at}` : `expires in ${seconds}s`;
-    if (seconds === 0) {
-      approvalBadge.textContent = "expired";
-      approveButton.disabled = true;
-      rejectButton.disabled = true;
-      if (pendingApproval) {
-        pendingApproval.nonce = null;
-      }
-      clearApprovalTimer();
-    }
-  };
-
-  refreshMeta();
-  approvalCountdownTimer = window.setInterval(refreshMeta, 1000);
+  startApprovalCountdown(approval.expires_at);
 }
 
 async function restoreApprovalStatusFromUrl() {
@@ -245,6 +297,9 @@ async function restoreApprovalStatusFromUrl() {
   approveButton.disabled = true;
   rejectButton.disabled = true;
   await pollApprovalStatus();
+  if (pendingApproval && approvalBadge.textContent === "executing") {
+    startApprovalPolling();
+  }
 }
 
 async function submitApprovalDecision(kind) {
@@ -274,15 +329,15 @@ async function submitApprovalDecision(kind) {
       return;
     }
     if (payload.status === "executing") {
-      pendingApproval.nonce = null;
-      approvalStatusPollTimer = window.setInterval(pollApprovalStatus, 1000);
+      startApprovalPolling();
       return;
     }
     pendingApproval.nonce = null;
     approvalBadge.textContent = payload.status;
     approvalMeta.textContent = payload.error_code || `expires=${payload.expires_at}`;
     if (kind === "approve" && payload.answer) {
-      conversationId = payload.conversation_id_result || conversationId;
+      approvalResultDelivered = true;
+      conversationId = payload.conversation_id || conversationId;
       appendMessage(payload.answer, "system");
     }
     if (kind === "reject") {
@@ -292,7 +347,12 @@ async function submitApprovalDecision(kind) {
     approvalBadge.textContent = "failed";
     approvalMeta.textContent = "Approval so'rovini yuborib bo'lmadi.";
   } finally {
-    clearApprovalTimer();
+    if (!pendingApproval || pendingApproval.nonce === null) {
+      clearApprovalCountdown();
+      if (approvalBadge.textContent !== "executing") {
+        clearApprovalPolling();
+      }
+    }
   }
 }
 

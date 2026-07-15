@@ -7,7 +7,7 @@ from app.agent.errors import AgentError
 from app.api.errors import ApiError
 from app.approval.errors import ApprovalError
 from app.approval.operation_coordinator import ApprovalOperationCoordinator
-from app.approval.repository import finalize_approval, get_approval, mark_executing
+from app.approval.repository import finalize_approval, get_approval, get_approval_result_message, mark_executing
 from app.approval.resume_service import ApprovalResumeService
 from app.approval.security import canonicalize_arguments, hash_text
 from app.rag.exceptions import RagError
@@ -59,7 +59,17 @@ class ApprovalExecutor:
             )
             return result
         except TimeoutError:
+            if task.done():
+                return task.result()
             current = get_approval(self._settings, approval.id)
+            if current is not None and current.status == "executed":
+                return {
+                    "approval": current,
+                    "conversation_id": current.conversation_id,
+                    "answer": get_approval_result_message(self._settings, current),
+                    "usage": None,
+                    "rag_result": None,
+                }
             write_audit_log(
                 self._settings,
                 action="approval_execute",
@@ -109,6 +119,16 @@ class ApprovalExecutor:
                 conversation_id=approval.conversation_id,
                 user_message=approval.original_user_message,
                 assistant_message=final_answer,
+                execution_result={
+                    "ok": True,
+                    "generation_id": rag_result.context.generation_id if rag_result.context else None,
+                    "source_chunk_ids": [source.chunk_id for source in rag_result.context.sources] if rag_result.context else [],
+                    "citation_order": [source.chunk_id for source in rag_result.context.sources] if rag_result.context else [],
+                    "prompt_tokens": usage.prompt_tokens,
+                    "completion_tokens": usage.completion_tokens,
+                    "invalid_citations_removed": rag_result.invalid_citations_removed,
+                    "citations_present": rag_result.citations_present,
+                },
             )
             write_audit_log(
                 self._settings,

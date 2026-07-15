@@ -1,4 +1,6 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from app.schemas.rag import RagMetadataResponse, RagSourceResponse
 
 
 class ApprovalPendingResponse(BaseModel):
@@ -29,3 +31,14 @@ class ApprovalDecisionRequest(BaseModel):
 class ApprovalDecisionResponse(ApprovalStatusResponse):
     answer: str | None = None
     conversation_id_result: int | None = None
+
+
+class ApprovalResultResponse(BaseModel):
+    approval_id: str
+    status: str
+    conversation_id: int | None
+    answer: str | None = None
+    sources: list[RagSourceResponse] = Field(default_factory=list)
+    rag: RagMetadataResponse
+    usage: dict[str, int | None] = Field(default_factory=lambda: {"prompt_tokens": None, "completion_tokens": None})
+    error_code: str | None = None
