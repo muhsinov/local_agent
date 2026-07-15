@@ -28,6 +28,11 @@ Primary specification: [TZ.md](TZ.md)
 - JSON mutation body `REQUEST_BODY_MAX_BYTES` bilan Content-Length guardga ega; multipart upload streaming file limitidan foydalanadi
 - `/live` dependency-free liveness, `/ready` startup/database/vector/draining readiness beradi
 - shutdown draining holatiga o‘tadi, yangi expensive requestlarni `503 SERVER_DRAINING` bilan to‘xtatadi va umumiy deadline bilan mavjud ishlarni kutadi
+- approval polling one-shot scheduler va bounded `Retry-After` backoff bilan parallel status/result requestlarini cheklaydi
+- limiter expired bucketlarni tozalaydi va max bucket bound ichida deterministik eviction qiladi
+- direct-disabled policy CSRF/authdan keyin, rate limitdan oldin bajariladi
+- shutdown dependency drain tartibi approval -> tool -> vector -> Ollama bo‘lib, bitta absolute deadline bilan ishlaydi
+- generic 500 javoblari safe JSON va reusable security headers bilan qaytadi
 - API va static frontend security headerlari, static HTML uchun strict CSP yoqilgan
 - limiter va lifecycle single-process in-memory; multi-worker deployment uchun shared store kerak
 

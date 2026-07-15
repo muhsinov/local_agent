@@ -21,6 +21,13 @@ class ToolOperationCoordinator:
     def __init__(self) -> None:
         self._lock = asyncio.Lock()
         self._active_operation: asyncio.Task[Any] | None = None
+        self.accepting_operations = True
+
+    def begin_drain(self) -> None:
+        self.accepting_operations = False
+
+    def start(self) -> None:
+        self.accepting_operations = True
 
     async def run(
         self,
@@ -30,6 +37,8 @@ class ToolOperationCoordinator:
         timeout_code: str,
         **kwargs,
     ) -> ToolOperationOutcome:
+        if not self.accepting_operations:
+            return ToolOperationOutcome(timed_out=True, timeout_code="SERVER_DRAINING")
         remaining = remaining_seconds(operation_deadline)
         if remaining <= 0:
             return ToolOperationOutcome(timed_out=True, timeout_code=timeout_code)

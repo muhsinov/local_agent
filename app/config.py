@@ -109,6 +109,8 @@ class Settings(BaseSettings):
     rate_limit_read_window_seconds: int = Field(default=60, alias="RATE_LIMIT_READ_WINDOW_SECONDS", ge=1, le=86400)
     rate_limit_direct_mutation_requests: int = Field(default=5, alias="RATE_LIMIT_DIRECT_MUTATION_REQUESTS", ge=1, le=1000)
     rate_limit_direct_mutation_window_seconds: int = Field(default=300, alias="RATE_LIMIT_DIRECT_MUTATION_WINDOW_SECONDS", ge=1, le=86400)
+    rate_limit_max_buckets: int = Field(default=10000, alias="RATE_LIMIT_MAX_BUCKETS", ge=100, le=100000)
+    rate_limit_cleanup_interval: int = Field(default=64, alias="RATE_LIMIT_CLEANUP_INTERVAL", ge=1, le=10000)
     runtime_drain_timeout_seconds: int = Field(default=60, alias="RUNTIME_DRAIN_TIMEOUT_SECONDS", ge=5, le=300)
     runtime_reject_during_drain: bool = Field(default=True, alias="RUNTIME_REJECT_DURING_DRAIN")
     safe_logging_enabled: bool = Field(default=True, alias="SAFE_LOGGING_ENABLED")

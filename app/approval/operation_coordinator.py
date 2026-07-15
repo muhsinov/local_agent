@@ -9,6 +9,13 @@ class ApprovalOperationCoordinator:
     def __init__(self) -> None:
         self._lock = asyncio.Lock()
         self._active: dict[str, asyncio.Task[Any]] = {}
+        self.accepting_operations = True
+
+    def begin_drain(self) -> None:
+        self.accepting_operations = False
+
+    def start(self) -> None:
+        self.accepting_operations = True
 
     async def start_or_join(
         self,
@@ -17,6 +24,8 @@ class ApprovalOperationCoordinator:
         operation_factory: Callable[[], Awaitable[Any]],
     ) -> asyncio.Task[Any]:
         async with self._lock:
+            if not self.accepting_operations:
+                raise RuntimeError("APPROVAL_COORDINATOR_DRAINING")
             existing = self._active.get(approval_id)
             if existing is not None and not existing.done():
                 return existing

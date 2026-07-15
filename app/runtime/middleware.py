@@ -2,6 +2,7 @@ from fastapi import Request
 from starlette.responses import JSONResponse
 
 from app.runtime.route_template import route_template
+from app.runtime.policy import direct_action_disabled
 from app.services.audit_service import write_audit_log
 
 
@@ -46,15 +47,22 @@ class RuntimeAdmissionMiddleware:
 
         content_type = request.headers.get("content-type", "").lower()
         content_length = request.headers.get("content-length")
+        too_large = False
         if request.method not in {"GET", "HEAD", "OPTIONS"} and not content_type.startswith("multipart/") and content_length is not None:
             try:
                 too_large = int(content_length) > settings.request_body_max_bytes
             except ValueError:
                 too_large = False
-            if too_large:
-                self._audit(request, "request_body_rejected", 413, "REQUEST_BODY_TOO_LARGE", None, False)
-                await self._respond(request, send, 413, "REQUEST_BODY_TOO_LARGE", "Request body limiti oshdi.", {})
-                return
+        if too_large:
+            self._audit(request, "request_body_rejected", 413, "REQUEST_BODY_TOO_LARGE", None, False)
+            await self._respond(request, send, 413, "REQUEST_BODY_TOO_LARGE", "Request body limiti oshdi.", {})
+            return
+
+        disabled, _ = direct_action_disabled(request, settings)
+        if disabled:
+            self._audit(request, "direct_action_denied", 403, "DIRECT_ACTION_DISABLED", "direct_mutation", False)
+            await self._respond(request, send, 403, "DIRECT_ACTION_DISABLED", "Direct action o'chirilgan.", {})
+            return
 
         if settings.rate_limit_enabled and path != "/live":
             identity = getattr(request.state, "runtime_identity", "local-read")

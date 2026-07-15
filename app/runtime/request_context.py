@@ -4,6 +4,7 @@ from time import perf_counter
 from fastapi import Request
 
 from app.runtime.logging import SafeJsonlLogger
+from app.runtime.headers import add_security_headers
 from app.runtime.route_template import route_template
 
 
@@ -36,16 +37,7 @@ class RequestContextMiddleware:
                 status_code = int(message["status"])
                 headers = list(message.get("headers", []))
                 existing_headers = {key.lower() for key, _ in headers}
-                headers.extend(
-                    [
-                        (b"x-request-id", request.state.request_id.encode("ascii")),
-                        (b"x-content-type-options", b"nosniff"),
-                        (b"referrer-policy", b"no-referrer"),
-                        (b"x-frame-options", b"DENY"),
-                        (b"permissions-policy", b"camera=(), microphone=(), geolocation=()"),
-                        (b"cross-origin-opener-policy", b"same-origin"),
-                    ]
-                )
+                headers = add_security_headers(headers, request.state.request_id)
                 path = scope.get("path", "")
                 if path.startswith("/static") or path == "/":
                     headers.append((b"content-security-policy", b"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"))

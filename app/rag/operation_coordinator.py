@@ -12,6 +12,13 @@ class VectorOperationCoordinator:
     def __init__(self) -> None:
         self._lock = asyncio.Lock()
         self._active_operation: asyncio.Task[Any] | None = None
+        self.accepting_operations = True
+
+    def begin_drain(self) -> None:
+        self.accepting_operations = False
+
+    def start(self) -> None:
+        self.accepting_operations = True
 
     async def run(
         self,
@@ -20,6 +27,8 @@ class VectorOperationCoordinator:
         acquire_timeout_seconds: float,
         **kwargs,
     ) -> T:
+        if not self.accepting_operations:
+            raise RuntimeError("VECTOR_COORDINATOR_DRAINING")
         try:
             await asyncio.wait_for(self._lock.acquire(), timeout=acquire_timeout_seconds)
         except TimeoutError as exc:

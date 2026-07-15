@@ -1,7 +1,6 @@
 import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
-from time import perf_counter
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -34,6 +33,7 @@ from app.runtime.logging import SafeJsonlLogger
 from app.runtime.middleware import RuntimeAdmissionMiddleware
 from app.runtime.rate_limit import FixedWindowRateLimiter
 from app.runtime.request_context import RequestContextMiddleware
+from app.runtime.headers import add_security_headers
 from app.services.audit_service import write_audit_log
 
 
@@ -67,32 +67,62 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 app.state.document_semaphore = asyncio.Semaphore(1)
             if not hasattr(app.state, "vector_operation_coordinator") or app.state.vector_operation_coordinator is None:
                 app.state.vector_operation_coordinator = VectorOperationCoordinator()
+            else:
+                app.state.vector_operation_coordinator.start()
             if not hasattr(app.state, "tool_operation_coordinator") or app.state.tool_operation_coordinator is None:
                 app.state.tool_operation_coordinator = ToolOperationCoordinator()
+            else:
+                app.state.tool_operation_coordinator.start()
             if not hasattr(app.state, "approval_operation_coordinator") or app.state.approval_operation_coordinator is None:
                 app.state.approval_operation_coordinator = ApprovalOperationCoordinator()
+            else:
+                app.state.approval_operation_coordinator.start()
             ensure_runtime_directories(active_settings)
             app.state.runtime_lifecycle.startup_ready = True
             yield
         finally:
-            shutdown_started = perf_counter()
+            loop = asyncio.get_running_loop()
+            shutdown_deadline = loop.time() + active_settings.runtime_drain_timeout_seconds
+            timeout_reported = False
+
+            def remaining() -> float:
+                return max(0.0, shutdown_deadline - loop.time())
+
+            async def wait_component(component, name: str) -> None:
+                nonlocal timeout_reported
+                if component is None:
+                    return
+                await component.shutdown(timeout_seconds=remaining())
+                if remaining() <= 0 and not timeout_reported:
+                    timeout_reported = True
+                    app.state.safe_logger.log(event="runtime_drain_timeout", request_id="", status_code=503, draining=True, component=name)
+                    write_audit_log(active_settings, action="runtime_drain_timeout", status="timeout", arguments={"status_code": 503, "draining": True, "component": name})
+
             await app.state.runtime_lifecycle.begin_drain()
-            remaining = max(0.0, active_settings.runtime_drain_timeout_seconds - (perf_counter() - shutdown_started))
-            drained = await app.state.runtime_lifecycle.wait_for_active(remaining)
-            if not drained:
-                app.state.safe_logger.log(event="runtime_drain_timeout", request_id="", status_code=503, draining=True)
-                write_audit_log(active_settings, action="runtime_drain_timeout", status="timeout", arguments={"status_code": 503, "draining": True})
-            if getattr(app.state, "vector_operation_coordinator", None) is not None:
-                remaining = max(0.0, active_settings.runtime_drain_timeout_seconds - (perf_counter() - shutdown_started))
-                await app.state.vector_operation_coordinator.shutdown(timeout_seconds=remaining)
-            if getattr(app.state, "tool_operation_coordinator", None) is not None:
-                remaining = max(0.0, active_settings.runtime_drain_timeout_seconds - (perf_counter() - shutdown_started))
-                await app.state.tool_operation_coordinator.shutdown(timeout_seconds=remaining)
-            if getattr(app.state, "approval_operation_coordinator", None) is not None:
-                remaining = max(0.0, active_settings.runtime_drain_timeout_seconds - (perf_counter() - shutdown_started))
-                await app.state.approval_operation_coordinator.shutdown(timeout_seconds=remaining)
+            drained = await app.state.runtime_lifecycle.wait_for_active(remaining())
+            if not drained and not timeout_reported:
+                timeout_reported = True
+                app.state.safe_logger.log(event="runtime_drain_timeout", request_id="", status_code=503, draining=True, component="http")
+                write_audit_log(active_settings, action="runtime_drain_timeout", status="timeout", arguments={"status_code": 503, "draining": True, "component": "http"})
+            approval = getattr(app.state, "approval_operation_coordinator", None)
+            if approval is not None:
+                approval.begin_drain()
+                await wait_component(approval, "approval")
+            tool = getattr(app.state, "tool_operation_coordinator", None)
+            if tool is not None:
+                tool.begin_drain()
+                await wait_component(tool, "tool")
+            vector = getattr(app.state, "vector_operation_coordinator", None)
+            if vector is not None:
+                vector.begin_drain()
+                await wait_component(vector, "vector")
             if created_client:
-                await app.state.ollama_client.close()
+                try:
+                    await asyncio.wait_for(app.state.ollama_client.close(), timeout=remaining())
+                except (TimeoutError, asyncio.CancelledError):
+                    if not timeout_reported:
+                        timeout_reported = True
+                        app.state.safe_logger.log(event="runtime_drain_timeout", request_id="", status_code=503, draining=True, component="ollama")
             app.state.safe_logger.close()
 
     app = FastAPI(title=active_settings.app_name, version=active_settings.app_version, lifespan=lifespan)
@@ -111,7 +141,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         max_csrf_tokens=active_settings.local_session_max_csrf_tokens,
     )
     app.state.runtime_lifecycle = RuntimeLifecycle()
-    app.state.rate_limiter = FixedWindowRateLimiter()
+    app.state.rate_limiter = FixedWindowRateLimiter(
+        max_buckets=active_settings.rate_limit_max_buckets,
+        cleanup_interval=active_settings.rate_limit_cleanup_interval,
+    )
     app.state.safe_logger = SafeJsonlLogger(
         active_settings.resolved_safe_log_directory,
         active_settings.safe_log_max_bytes,
@@ -149,8 +182,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def handle_unexpected_error(request: Request, _: Exception):
         response = JSONResponse(status_code=500, content={"detail": {"code": "INTERNAL_SERVER_ERROR", "message": "Ichki server xatosi."}})
         request_id = getattr(request.state, "request_id", None)
-        if request_id:
-            response.headers["X-Request-ID"] = request_id
+        response.raw_headers = add_security_headers(response.raw_headers, request_id, no_store=True)
         return response
 
     @app.get("/", include_in_schema=False)

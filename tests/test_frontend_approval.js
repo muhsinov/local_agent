@@ -51,6 +51,14 @@ function makeHarness(fetchImpl, hash = "") {
     clearInterval(id) {
       timers.delete(id);
     },
+    setTimeout(callback) {
+      const id = nextTimer++;
+      timers.set(id, callback);
+      return id;
+    },
+    clearTimeout(id) {
+      timers.delete(id);
+    },
   };
   const fetch = async (...args) => {
     calls.push(args[0]);

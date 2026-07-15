@@ -36,7 +36,9 @@ const previewMeta = document.getElementById("preview-meta");
 let conversationId = null;
 let pendingApproval = null;
 let approvalCountdownTimer = null;
-let approvalStatusPollTimer = null;
+let approvalPollTimer = null;
+let approvalPollInFlight = false;
+let approvalPollNextDelay = null;
 let approvalResultDelivered = false;
 let approvalResultRequestInFlight = false;
 let localCsrfToken = null;
@@ -226,10 +228,11 @@ function clearApprovalCountdown() {
 }
 
 function clearApprovalPolling() {
-  if (approvalStatusPollTimer !== null) {
-    window.clearInterval(approvalStatusPollTimer);
-    approvalStatusPollTimer = null;
+  if (approvalPollTimer !== null) {
+    window.clearTimeout(approvalPollTimer);
+    approvalPollTimer = null;
   }
+  approvalPollNextDelay = null;
 }
 
 function clearApprovalHash() {
@@ -238,10 +241,28 @@ function clearApprovalHash() {
   }
 }
 
-function startApprovalPolling() {
-  if (approvalStatusPollTimer === null) {
-    approvalStatusPollTimer = window.setInterval(pollApprovalStatus, 1000);
+function retryAfterMilliseconds(response, fallbackMs = 1000) {
+  const raw = response?.headers?.get?.("Retry-After")?.trim();
+  let milliseconds = Number(fallbackMs);
+  if (raw && /^\d+$/.test(raw)) {
+    milliseconds = Number(raw) * 1000;
+  } else if (raw) {
+    const timestamp = Date.parse(raw);
+    if (!Number.isNaN(timestamp)) milliseconds = timestamp - Date.now();
   }
+  return Math.min(60000, Math.max(1000, Number.isFinite(milliseconds) ? milliseconds : 1000));
+}
+
+function scheduleApprovalPoll(delayMs = 1000) {
+  if (approvalPollInFlight) {
+    approvalPollNextDelay = delayMs;
+    return;
+  }
+  if (approvalPollTimer !== null || !pendingApproval) return;
+  approvalPollTimer = window.setTimeout(async () => {
+    approvalPollTimer = null;
+    await pollApprovalStatus();
+  }, Math.min(60000, Math.max(0, delayMs)));
 }
 
 function startApprovalCountdown(expiresAt) {
@@ -279,14 +300,18 @@ function clearApprovalState() {
 }
 
 async function pollApprovalStatus() {
-  if (!pendingApproval) {
+  if (!pendingApproval || approvalPollInFlight) {
     return;
   }
+  approvalPollInFlight = true;
   try {
     const response = await localFetch(`/approvals/${pendingApproval.approvalId}`);
     const payload = await safeJson(response);
     if (!response.ok || !payload) {
-      if (response.status === 429 || payload?.detail?.code === "SERVER_DRAINING") {
+      if (response.status === 429) {
+        approvalMeta.textContent = resilienceMessage(response, payload, "Approval statusi vaqtincha mavjud emas.");
+        scheduleApprovalPoll(retryAfterMilliseconds(response));
+      } else if (response.status === 503 && payload?.detail?.code === "SERVER_DRAINING") {
         approvalMeta.textContent = resilienceMessage(response, payload, "Approval statusi vaqtincha mavjud emas.");
       }
       return;
@@ -299,10 +324,11 @@ async function pollApprovalStatus() {
     approvalMeta.textContent = payload.error_code || `expires=${payload.expires_at}`;
     if (payload.status === "pending") {
       startApprovalCountdown(payload.expires_at);
+      scheduleApprovalPoll();
     }
     if (payload.status === "executing") {
       clearApprovalCountdown();
-      startApprovalPolling();
+      scheduleApprovalPoll();
     }
     if (payload.status === "executed") {
       clearApprovalCountdown();
@@ -325,6 +351,15 @@ async function pollApprovalStatus() {
             clearApprovalHash();
             return;
           }
+          if (resultResponse.status === 429) {
+            approvalMeta.textContent = resilienceMessage(resultResponse, result, "Final result vaqtincha mavjud emas; qayta uriniladi.");
+            scheduleApprovalPoll(retryAfterMilliseconds(resultResponse));
+            return;
+          }
+          if (resultResponse.status === 503 && result?.detail?.code === "SERVER_DRAINING") {
+            approvalMeta.textContent = resilienceMessage(resultResponse, result, "Server draining; persisted result keyingi startupdan keyin conversation'da mavjud bo'lishi mumkin.");
+            return;
+          }
           if (resultResponse.status >= 400 && resultResponse.status < 500 && resultResponse.status !== 429) {
             approvalMeta.textContent = resilienceMessage(resultResponse, result, "Approval resultini olish rad etildi.");
             pendingApproval.nonce = null;
@@ -332,9 +367,11 @@ async function pollApprovalStatus() {
             return;
           }
           approvalMeta.textContent = resilienceMessage(resultResponse, result, "Final result vaqtincha mavjud emas; qayta uriniladi.");
+          scheduleApprovalPoll();
           return;
         } catch (error) {
           approvalMeta.textContent = "Final resultga ulanish vaqtincha imkonsiz; qayta uriniladi.";
+          scheduleApprovalPoll();
           return;
         } finally {
           approvalResultRequestInFlight = false;
@@ -361,6 +398,14 @@ async function pollApprovalStatus() {
     }
   } catch (error) {
     approvalMeta.textContent = "Approval statusini olish vaqtincha imkonsiz.";
+    scheduleApprovalPoll();
+  } finally {
+    approvalPollInFlight = false;
+    if (approvalPollNextDelay !== null) {
+      const delay = approvalPollNextDelay;
+      approvalPollNextDelay = null;
+      scheduleApprovalPoll(delay);
+    }
   }
 }
 
@@ -395,7 +440,7 @@ async function restoreApprovalStatusFromUrl() {
   rejectButton.disabled = true;
   await pollApprovalStatus();
   if (pendingApproval && approvalBadge.textContent === "executing") {
-    startApprovalPolling();
+    scheduleApprovalPoll();
   }
 }
 
@@ -427,7 +472,7 @@ async function submitApprovalDecision(kind) {
       return;
     }
     if (payload.status === "executing") {
-      startApprovalPolling();
+      scheduleApprovalPoll();
       return;
     }
     pendingApproval.nonce = null;
