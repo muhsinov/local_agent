@@ -1,5 +1,5 @@
 import json
-from xml.sax.saxutils import quoteattr
+from xml.sax.saxutils import escape, quoteattr
 
 from app.agent.errors import AgentError
 from app.agent.helpers import safe_truncate
@@ -22,7 +22,26 @@ TOOL_AGENT_SYSTEM_PROMPT = (
 
 
 def _escape_block(text: str) -> str:
-    return text.replace("<", "&lt;").replace(">", "&gt;")
+    return escape(text)
+
+
+def _fit_escaped_content(text: str, max_chars: int) -> tuple[str, bool]:
+    escaped_full = _escape_block(text)
+    if len(escaped_full) <= max_chars:
+        return escaped_full, False
+    low = 0
+    high = len(text)
+    best = ""
+    while low <= high:
+        mid = (low + high) // 2
+        candidate_raw, _ = safe_truncate(text, mid)
+        candidate_escaped = _escape_block(candidate_raw)
+        if len(candidate_escaped) <= max_chars:
+            best = candidate_escaped
+            low = mid + 1
+        else:
+            high = mid - 1
+    return best, True
 
 
 def _render_tool_result_xml(*, result: ToolResult, content: str, truncated: bool) -> str:
@@ -61,8 +80,8 @@ def render_tool_result(result: ToolResult, *, max_chars: int) -> str | None:
         return None
 
     available_content_chars = max_chars - len(minimal)
-    truncated_content, _ = safe_truncate(escaped_content, available_content_chars)
-    return _render_tool_result_xml(result=result, content=truncated_content, truncated=True)
+    fitted_content, _ = _fit_escaped_content(result.content, available_content_chars)
+    return _render_tool_result_xml(result=result, content=fitted_content, truncated=True)
 
 
 def build_agent_messages(
@@ -75,46 +94,61 @@ def build_agent_messages(
     context_text: str | None,
     max_chars: int,
 ) -> tuple[list[dict[str, str]], bool]:
-    messages: list[dict[str, str]] = [
-        {"role": "system", "content": system_prompt},
-        {"role": "system", "content": tool_definitions_text},
-        {"role": "user", "content": user_message},
-    ]
-    current_chars = sum(len(message["content"]) for message in messages)
-    if current_chars > max_chars:
+    mandatory_chars = len(system_prompt) + len(tool_definitions_text) + len(user_message)
+    if mandatory_chars > max_chars:
         raise AgentError(422, "RAG_PROMPT_TOO_LARGE", "Prompt budget safety prompt va foydalanuvchi xabari uchun yetarli emas.")
+    remaining_budget = max_chars - mandatory_chars
 
     context_message = f"{DOCUMENTS_PREFIX}{context_text}{DOCUMENTS_SUFFIX}" if context_text else None
     included_context = False
+    selected_context: str | None = None
+    selected_latest_result: str | None = None
+    selected_previous_results: list[str] = []
+    selected_history: list[dict[str, str]] = []
 
-    def maybe_add_system(content: str) -> bool:
-        nonlocal current_chars
-        if current_chars + len(content) > max_chars:
+    def reserve(content: str) -> bool:
+        nonlocal remaining_budget
+        if len(content) > remaining_budget:
             return False
-        messages.append({"role": "system", "content": content})
-        current_chars += len(content)
+        remaining_budget -= len(content)
         return True
 
     if tool_results:
-        latest_result = render_tool_result(tool_results[-1], max_chars=max_chars - current_chars)
+        latest_result = render_tool_result(tool_results[-1], max_chars=remaining_budget)
         if latest_result is None:
             raise AgentError(422, "RAG_PROMPT_TOO_LARGE", "Latest tool result prompt budgetga sig'madi.")
-        maybe_add_system(latest_result)
-    if context_message and maybe_add_system(context_message):
+        if not reserve(latest_result):
+            raise AgentError(422, "RAG_PROMPT_TOO_LARGE", "Latest tool result prompt budgetga sig'madi.")
+        selected_latest_result = latest_result
+    if context_message and reserve(context_message):
+        selected_context = context_message
         included_context = True
     for result in reversed(tool_results[:-1]):
-        rendered = render_tool_result(result, max_chars=max_chars - current_chars)
+        rendered = render_tool_result(result, max_chars=remaining_budget)
         if rendered is None:
             continue
-        maybe_add_system(rendered)
+        if reserve(rendered):
+            selected_previous_results.append(rendered)
 
-    trimmed_history: list[dict[str, str]] = []
-    history_chars = 0
+    retained_history_newest_first: list[dict[str, str]] = []
     for item in reversed(history):
         item_chars = len(item["content"])
-        if current_chars + history_chars + item_chars > max_chars:
+        if item_chars > remaining_budget:
             continue
-        trimmed_history.append(item)
-        history_chars += item_chars
-    messages.extend(reversed(trimmed_history))
+        retained_history_newest_first.append(item)
+        remaining_budget -= item_chars
+    selected_history = list(reversed(retained_history_newest_first))
+
+    messages: list[dict[str, str]] = [
+        {"role": "system", "content": system_prompt},
+        {"role": "system", "content": tool_definitions_text},
+    ]
+    if selected_context is not None:
+        messages.append({"role": "system", "content": selected_context})
+    messages.extend(selected_history)
+    messages.append({"role": "user", "content": user_message})
+    for rendered in reversed(selected_previous_results):
+        messages.append({"role": "system", "content": rendered})
+    if selected_latest_result is not None:
+        messages.append({"role": "system", "content": selected_latest_result})
     return messages, included_context
