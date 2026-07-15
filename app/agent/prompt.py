@@ -1,6 +1,8 @@
 import json
+from xml.sax.saxutils import quoteattr
 
 from app.agent.errors import AgentError
+from app.agent.helpers import safe_truncate
 from app.agent.models import ToolDefinition, ToolResult
 from app.rag.prompt_builder import DOCUMENTS_PREFIX, DOCUMENTS_SUFFIX
 
@@ -23,6 +25,18 @@ def _escape_block(text: str) -> str:
     return text.replace("<", "&lt;").replace(">", "&gt;")
 
 
+def _render_tool_result_xml(*, result: ToolResult, content: str, truncated: bool) -> str:
+    return (
+        "<tool_results>\n"
+        f"<tool_result id={quoteattr(result.call_id)} name={quoteattr(result.tool_name)} "
+        f"ok={quoteattr(str(result.ok).lower())} error_code={quoteattr(result.error_code or '')} "
+        f"truncated={quoteattr(str(truncated).lower())}>\n"
+        f"{content}\n"
+        "</tool_result>\n"
+        "</tool_results>"
+    )
+
+
 def render_tool_definitions(definitions: list[ToolDefinition]) -> str:
     payload = [
         {
@@ -36,19 +50,19 @@ def render_tool_definitions(definitions: list[ToolDefinition]) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
-def render_tool_results(results: list[ToolResult]) -> list[str]:
-    rendered: list[str] = []
-    for result in results:
-        rendered.append(
-            (
-                f'<tool_results>\n<tool_result id="{result.call_id}" name="{result.tool_name}" '
-                f'ok="{str(result.ok).lower()}" error_code="{result.error_code or ""}" '
-                f'truncated="{str(result.truncated).lower()}">\n'
-                f"{_escape_block(result.content)}\n"
-                "</tool_result>\n</tool_results>"
-            )
-        )
-    return rendered
+def render_tool_result(result: ToolResult, *, max_chars: int) -> str | None:
+    escaped_content = _escape_block(result.content)
+    full = _render_tool_result_xml(result=result, content=escaped_content, truncated=result.truncated)
+    if len(full) <= max_chars:
+        return full
+
+    minimal = _render_tool_result_xml(result=result, content="", truncated=True)
+    if len(minimal) > max_chars:
+        return None
+
+    available_content_chars = max_chars - len(minimal)
+    truncated_content, _ = safe_truncate(escaped_content, available_content_chars)
+    return _render_tool_result_xml(result=result, content=truncated_content, truncated=True)
 
 
 def build_agent_messages(
@@ -64,14 +78,12 @@ def build_agent_messages(
     messages: list[dict[str, str]] = [
         {"role": "system", "content": system_prompt},
         {"role": "system", "content": tool_definitions_text},
+        {"role": "user", "content": user_message},
     ]
-    current_chars = sum(len(message["content"]) for message in messages) + len(user_message)
+    current_chars = sum(len(message["content"]) for message in messages)
     if current_chars > max_chars:
         raise AgentError(422, "RAG_PROMPT_TOO_LARGE", "Prompt budget safety prompt va foydalanuvchi xabari uchun yetarli emas.")
 
-    rendered_results = render_tool_results(tool_results)
-    latest_result = rendered_results[-1:] if rendered_results else []
-    previous_results = list(reversed(rendered_results[:-1])) if len(rendered_results) > 1 else []
     context_message = f"{DOCUMENTS_PREFIX}{context_text}{DOCUMENTS_SUFFIX}" if context_text else None
     included_context = False
 
@@ -83,12 +95,18 @@ def build_agent_messages(
         current_chars += len(content)
         return True
 
-    for content in latest_result:
-        maybe_add_system(content)
+    if tool_results:
+        latest_result = render_tool_result(tool_results[-1], max_chars=max_chars - current_chars)
+        if latest_result is None:
+            raise AgentError(422, "RAG_PROMPT_TOO_LARGE", "Latest tool result prompt budgetga sig'madi.")
+        maybe_add_system(latest_result)
     if context_message and maybe_add_system(context_message):
         included_context = True
-    for content in previous_results:
-        maybe_add_system(content)
+    for result in reversed(tool_results[:-1]):
+        rendered = render_tool_result(result, max_chars=max_chars - current_chars)
+        if rendered is None:
+            continue
+        maybe_add_system(rendered)
 
     trimmed_history: list[dict[str, str]] = []
     history_chars = 0
@@ -99,5 +117,4 @@ def build_agent_messages(
         trimmed_history.append(item)
         history_chars += item_chars
     messages.extend(reversed(trimmed_history))
-    messages.append({"role": "user", "content": user_message})
     return messages, included_context

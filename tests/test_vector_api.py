@@ -1,4 +1,5 @@
 from fastapi.testclient import TestClient
+import time
 
 from app.database import initialize_database
 from app.main import create_app
@@ -90,6 +91,8 @@ def test_vector_api_returns_busy_for_parallel_rebuild(monkeypatch, tmp_path) -> 
     with TestClient(app) as client:
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
             first = pool.submit(lambda: client.post("/vector-index/rebuild"))
+            while not app.state.vector_operation_coordinator.is_busy():
+                time.sleep(0.005)
             second = pool.submit(lambda: client.post("/vector-index/rebuild"))
             busy_response = second.result()
             gate.set()
@@ -138,6 +141,8 @@ def test_vector_api_search_busy_while_background_rebuild_continues(monkeypatch, 
     with TestClient(app) as client:
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
             first = pool.submit(lambda: client.post("/vector-index/rebuild"))
+            while not app.state.vector_operation_coordinator.is_busy():
+                time.sleep(0.005)
             second = pool.submit(lambda: client.post("/vector-search", json={"query": "a", "top_k": 1}))
             busy_response = second.result()
             gate.set()

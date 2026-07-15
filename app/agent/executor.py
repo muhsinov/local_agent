@@ -44,19 +44,26 @@ class ToolExecutor:
                 tool.definition.timeout_seconds,
             )
             effective_deadline = min(deadline, tool_deadline)
+            timeout_code = "AGENT_TOTAL_TIMEOUT" if deadline <= tool_deadline else "TOOL_EXECUTION_TIMEOUT"
             execute_async = getattr(type(tool), "execute_async", None)
             if execute_async is not None and execute_async is not ReadOnlyTool.execute_async:
                 timeout_seconds = remaining_seconds(effective_deadline)
                 if timeout_seconds <= 0:
                     raise AgentError(504, "AGENT_TOTAL_TIMEOUT", "Agent total timeoutga yetdi.")
-                content = await asyncio.wait_for(tool.execute_async(validated, self._settings), timeout=timeout_seconds)
+                try:
+                    content = await asyncio.wait_for(tool.execute_async(validated, self._settings), timeout=timeout_seconds)
+                except TimeoutError as exc:
+                    if timeout_code == "AGENT_TOTAL_TIMEOUT":
+                        raise AgentError(504, "AGENT_TOTAL_TIMEOUT", "Agent total timeoutga yetdi.") from exc
+                    result = self._error_result(call.id, tool.definition.name, "TOOL_EXECUTION_TIMEOUT", started)
+                    return self._finalize(result, iteration)
             else:
                 outcome = await self._coordinator.run(
                     tool.execute,
                     validated,
                     self._settings,
                     operation_deadline=effective_deadline,
-                    timeout_code="AGENT_TOTAL_TIMEOUT" if deadline <= tool_deadline else "TOOL_EXECUTION_TIMEOUT",
+                    timeout_code=timeout_code,
                 )
                 if outcome.timed_out:
                     if outcome.timeout_code == "AGENT_TOTAL_TIMEOUT":
@@ -74,8 +81,6 @@ class ToolExecutor:
                 truncated=truncated,
                 execution_time_ms=int((perf_counter() - started) * 1000),
             )
-        except TimeoutError:
-            result = self._error_result(call.id, tool.definition.name, "TOOL_EXECUTION_TIMEOUT", started)
         except asyncio.CancelledError:
             raise
         except AgentError:

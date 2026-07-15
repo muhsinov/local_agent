@@ -27,6 +27,12 @@ class _Tool:
         return "x" * 400
 
 
+class _AsyncTool(_Tool):
+    async def execute_async(self, arguments, settings) -> str:
+        await asyncio.sleep(0)
+        return "ok"
+
+
 def test_executor_truncates_large_result(tmp_path) -> None:
     settings = build_settings(tmp_path, AGENT_MAX_SINGLE_TOOL_RESULT_CHARS=200)
     deadline = time.monotonic() + 30
@@ -289,5 +295,91 @@ def test_executor_maps_tool_local_timeout(tmp_path) -> None:
         assert result.error_code == "TOOL_EXECUTION_TIMEOUT"
         release.set()
         await coordinator.shutdown(timeout_seconds=0.2)
+
+    asyncio.run(scenario())
+
+
+def test_async_tool_maps_agent_deadline_timeout(monkeypatch, tmp_path) -> None:
+    audit_calls: list[dict] = []
+
+    class SlowAsyncTool(_AsyncTool):
+        async def execute_async(self, arguments, settings) -> str:
+            await asyncio.sleep(0.05)
+            return "done"
+
+    def fake_audit(settings, *, action, status, arguments, execution_time_ms=None) -> None:
+        audit_calls.append(arguments)
+
+    monkeypatch.setattr("app.agent.executor.write_audit_log", fake_audit)
+    settings = build_settings(tmp_path, AGENT_TOOL_TIMEOUT_SECONDS=5)
+
+    async def scenario() -> None:
+        executor = ToolExecutor(settings)
+        with pytest.raises(AgentError) as exc_info:
+            await executor.execute(
+                tool=SlowAsyncTool(timeout_seconds=10),
+                call=ToolCall(id="call_1", name="demo_tool", arguments={"value": 1}),
+                iteration=1,
+                deadline=time.monotonic() + 0.01,
+            )
+        assert exc_info.value.code == "AGENT_TOTAL_TIMEOUT"
+
+    asyncio.run(scenario())
+    assert audit_calls == []
+
+
+def test_async_tool_maps_tool_local_timeout_and_audit(monkeypatch, tmp_path) -> None:
+    audit_calls: list[dict] = []
+
+    class SlowAsyncTool(_AsyncTool):
+        async def execute_async(self, arguments, settings) -> str:
+            await asyncio.sleep(0.05)
+            return "done"
+
+    def fake_audit(settings, *, action, status, arguments, execution_time_ms=None) -> None:
+        audit_calls.append(arguments)
+
+    monkeypatch.setattr("app.agent.executor.write_audit_log", fake_audit)
+    monkeypatch.setattr("app.agent.executor.remaining_seconds", lambda deadline: 0.01)
+    settings = build_settings(tmp_path, AGENT_TOOL_TIMEOUT_SECONDS=5)
+
+    async def scenario() -> None:
+        executor = ToolExecutor(settings)
+        result = await executor.execute(
+            tool=SlowAsyncTool(timeout_seconds=1),
+            call=ToolCall(id="call_1", name="demo_tool", arguments={"value": 1}),
+            iteration=1,
+            deadline=time.monotonic() + 2,
+        )
+        assert result.error_code == "TOOL_EXECUTION_TIMEOUT"
+
+    asyncio.run(scenario())
+    assert audit_calls[-1]["error_code"] == "TOOL_EXECUTION_TIMEOUT"
+
+
+def test_async_tool_cancellation_raises_cancelled_error(tmp_path) -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class BlockingAsyncTool(_AsyncTool):
+        async def execute_async(self, arguments, settings) -> str:
+            started.set()
+            await release.wait()
+            return "done"
+
+    async def scenario() -> None:
+        executor = ToolExecutor(build_settings(tmp_path))
+        task = asyncio.create_task(
+            executor.execute(
+                tool=BlockingAsyncTool(timeout_seconds=5),
+                call=ToolCall(id="call_1", name="demo_tool", arguments={"value": 1}),
+                iteration=1,
+                deadline=time.monotonic() + 2,
+            )
+        )
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
 
     asyncio.run(scenario())

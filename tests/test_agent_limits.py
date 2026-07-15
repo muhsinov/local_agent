@@ -46,7 +46,7 @@ def test_agent_loop_enforces_iteration_limit(tmp_path) -> None:
 
     async def ollama_call(messages):
         return OllamaChatResult(
-            content='{"type":"tool_call","calls":[{"id":"1","name":"list_documents","arguments":{}}]}',
+            content='{"type":"tool_call","calls":[{"id":"call_1","name":"list_documents","arguments":{}}]}',
             usage=OllamaUsage(prompt_tokens=1, completion_tokens=1),
         )
 
@@ -60,11 +60,11 @@ def test_agent_loop_enforces_total_tool_call_limit(tmp_path) -> None:
     loop = _build_loop(tmp_path, AGENT_MAX_ITERATIONS=5, AGENT_MAX_TOOL_CALLS=1)
     responses = [
         OllamaChatResult(
-            content='{"type":"tool_call","calls":[{"id":"1","name":"list_documents","arguments":{}}]}',
+            content='{"type":"tool_call","calls":[{"id":"call_1","name":"list_documents","arguments":{}}]}',
             usage=OllamaUsage(prompt_tokens=1, completion_tokens=1),
         ),
         OllamaChatResult(
-            content='{"type":"tool_call","calls":[{"id":"2","name":"list_documents","arguments":{}}]}',
+            content='{"type":"tool_call","calls":[{"id":"call_2","name":"list_documents","arguments":{}}]}',
             usage=OllamaUsage(prompt_tokens=1, completion_tokens=1),
         ),
     ]

@@ -17,7 +17,11 @@ class _FinalEnvelope(BaseModel):
 class _ToolCallEnvelopeItem(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    id: str = Field(min_length=1, max_length=80)
+    id: str = Field(
+        min_length=6,
+        max_length=69,
+        pattern=r"^call_[A-Za-z0-9_-]{1,64}$",
+    )
     name: str = Field(min_length=1, max_length=64)
     arguments: dict[str, Any]
 
@@ -93,4 +97,3 @@ def parse_agent_response(raw: str, *, max_calls: int, max_depth: int = 6) -> tup
         seen_ids.add(item.id)
         calls.append(ToolCall(id=item.id, name=item.name, arguments=item.arguments))
     return ("tool_call", calls)
-

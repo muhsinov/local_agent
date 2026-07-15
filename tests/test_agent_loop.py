@@ -36,7 +36,7 @@ async def _ollama_final(messages):
 
 def _ollama_tool_then_final():
     calls = [
-        OllamaChatResult(content='{"type":"tool_call","calls":[{"id":"1","name":"list_documents","arguments":{}}]}', usage=OllamaUsage(prompt_tokens=1, completion_tokens=1)),
+        OllamaChatResult(content='{"type":"tool_call","calls":[{"id":"call_1","name":"list_documents","arguments":{}}]}', usage=OllamaUsage(prompt_tokens=1, completion_tokens=1)),
         OllamaChatResult(content='{"type":"final","answer":"done"}', usage=OllamaUsage(prompt_tokens=1, completion_tokens=1)),
     ]
 
@@ -102,7 +102,7 @@ def test_agent_loop_rejects_tool_call_on_last_iteration(tmp_path) -> None:
 
     async def ollama_call(messages):
         return OllamaChatResult(
-            content='{"type":"tool_call","calls":[{"id":"1","name":"list_documents","arguments":{}}]}',
+            content='{"type":"tool_call","calls":[{"id":"call_1","name":"list_documents","arguments":{}}]}',
             usage=OllamaUsage(prompt_tokens=1, completion_tokens=1),
         )
 
@@ -142,7 +142,7 @@ def test_agent_loop_uses_safe_global_result_truncation(tmp_path) -> None:
     captured_messages: list[list[dict[str, str]]] = []
     calls = [
         OllamaChatResult(
-            content='{"type":"tool_call","calls":[{"id":"1","name":"list_documents","arguments":{}}]}',
+            content='{"type":"tool_call","calls":[{"id":"call_1","name":"list_documents","arguments":{}}]}',
             usage=OllamaUsage(prompt_tokens=1, completion_tokens=1),
         ),
         OllamaChatResult(content='{"type":"final","answer":"done"}', usage=OllamaUsage(prompt_tokens=1, completion_tokens=1)),
