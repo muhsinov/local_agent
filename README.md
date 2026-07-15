@@ -109,6 +109,14 @@ Bu faqat model avval cache qilingan bo'lsa ishlaydi.
 - `RAG_PROMPT_MAX_CHARS`
 - `RAG_RESERVED_ANSWER_TOKENS`
 - `RAG_CHARS_PER_TOKEN_ESTIMATE`
+- `TOOLS_ENABLED`
+- `AGENT_MAX_ITERATIONS`
+- `AGENT_TOTAL_TIMEOUT_SECONDS`
+- `AGENT_TOOL_TIMEOUT_SECONDS`
+- `AGENT_MAX_TOOL_CALLS`
+- `AGENT_MAX_TOOL_RESULT_CHARS`
+- `AGENT_MAX_SINGLE_TOOL_RESULT_CHARS`
+- `AGENT_REQUIRE_EXPLICIT_TOOL_INTENT`
 
 ## API
 
@@ -145,6 +153,17 @@ Bu faqat model avval cache qilingan bo'lsa ishlaydi.
 - context source blocklari budgetga sig'masa excerpt qisqartiriladi yoki block tashlab ketiladi
 - markdown link va image label ichidagi `[1](...)`, `![1](...)` citation deb olinmaydi
 - invalid citation normalization multiline formattingni imkon qadar saqlaydi, lekin har doim to'liq markdown parser emas
+
+## Read-only tools
+
+- `Use tools` yoqilganda agent faqat explicit read-only local tool allowlist'dan foydalanadi
+- mavjud tool'lar: documents list/metadata/excerpt/search, conversations list/messages, safe local system info
+- explicit intent kerak: umumiy savol tool loopni avtomatik boshlamaydi
+- shell, write access, web request, browser automation va secret/environment read yo'q
+- tool output untrusted data hisoblanadi
+- bounded loop: iteration, tool call va timeout limitlari bor
+- audit faqat safe metadata yozadi; raw arguments va raw results saqlanmaydi
+- known limitation: tool calling native OS execution emas, faqat lokal metadata va extracted text read-only access
 
 ## Vector index lifecycle
 

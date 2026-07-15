@@ -4,6 +4,11 @@ from time import perf_counter
 
 from fastapi import APIRouter, Request
 
+from app.agent.errors import AgentError
+from app.agent.loop import AgentLoop
+from app.agent.policy import ToolPolicy
+from app.agent.prompt import TOOL_AGENT_SYSTEM_PROMPT, render_tool_definitions
+from app.agent.registry import build_default_registry
 from app.api.errors import ApiError
 from app.llm.ollama_client import SYSTEM_PROMPT
 from app.llm.exceptions import (
@@ -55,7 +60,13 @@ async def chat(request: Request, payload: ChatRequest) -> ChatResponse:
         raise _database_error() from None
 
     rag_enabled = settings.rag_enabled if payload.use_rag is None else payload.use_rag
-    system_prompt = RAG_SYSTEM_PROMPT if rag_enabled else SYSTEM_PROMPT
+    registry = build_default_registry(settings, request.app.state.vector_operation_coordinator)
+    policy = ToolPolicy(settings, registry)
+    try:
+        use_tools = policy.should_use_tools(message=payload.message, use_tools=payload.use_tools)
+    except AgentError as exc:
+        raise ApiError(exc.status_code, exc.code, exc.message) from exc
+    system_prompt = TOOL_AGENT_SYSTEM_PROMPT if use_tools else (RAG_SYSTEM_PROMPT if rag_enabled else SYSTEM_PROMPT)
     rag_service = RagService(settings, request.app.state.vector_operation_coordinator)
     try:
         prompt_budget = calculate_prompt_budget(
@@ -69,50 +80,99 @@ async def chat(request: Request, payload: ChatRequest) -> ChatResponse:
         )
     except RagError as exc:
         raise ApiError(exc.status_code, exc.code, exc.message) from exc
+    available_context_chars = prompt_budget.available_context_chars
+    if use_tools:
+        available_context_chars = max(0, available_context_chars - len(render_tool_definitions(registry.definitions())))
     rag_started = perf_counter()
     try:
         rag_result = await rag_service.prepare(
             query=payload.message,
             document_ids=payload.document_ids,
             use_rag=rag_enabled,
-            available_context_chars=prompt_budget.available_context_chars,
+            available_context_chars=available_context_chars,
         )
     except RagError as exc:
         raise ApiError(exc.status_code, exc.code, exc.message) from exc
     retrieval_ms = int((perf_counter() - rag_started) * 1000)
 
-    try:
-        messages = build_chat_messages(
-            system_prompt=RAG_SYSTEM_PROMPT if rag_result.context else system_prompt,
-            user_message=payload.message,
-            history=history,
-            context_text=rag_result.context.context_text if rag_result.context else None,
-            max_chars=prompt_budget.max_input_chars,
-        )
-    except RagError as exc:
-        raise ApiError(exc.status_code, exc.code, exc.message) from exc
-
-    semaphore = request.app.state.chat_semaphore
-    acquired = False
-    try:
-        await asyncio.wait_for(semaphore.acquire(), timeout=settings.chat_busy_timeout_seconds)
-        acquired = True
-    except TimeoutError:
-        raise ApiError(429, "AGENT_BUSY", "Agent hozir band. Bir ozdan keyin qayta urinib ko'ring.") from None
-
     client = request.app.state.ollama_client
+    semaphore = request.app.state.chat_semaphore
+
+    async def ollama_call(messages: list[dict[str, str]]):
+        acquired = False
+        try:
+            await asyncio.wait_for(semaphore.acquire(), timeout=settings.chat_busy_timeout_seconds)
+            acquired = True
+        except TimeoutError:
+            raise ApiError(429, "AGENT_BUSY", "Agent hozir band. Bir ozdan keyin qayta urinib ko'ring.") from None
+        try:
+            if not await client.is_model_installed(settings.ollama_model):
+                raise ApiError(503, "OLLAMA_MODEL_NOT_FOUND", "Kerakli Ollama modeli o'rnatilmagan.")
+            return await client.chat(messages)
+        finally:
+            if acquired:
+                semaphore.release()
+
     started_at = perf_counter()
+    tool_call_summaries: list[dict] = []
+    returned_sources = rag_result.context.sources if rag_result.context else []
+    rag_generation_id = rag_result.context.generation_id if rag_result.context else None
+    rag_context_chars = rag_result.context.context_chars if rag_result.context else 0
+    rag_retrieved_count = rag_result.context.retrieved_count if rag_result.context else 0
     try:
-        if not await client.is_model_installed(settings.ollama_model):
-            raise ApiError(503, "OLLAMA_MODEL_NOT_FOUND", "Kerakli Ollama modeli o'rnatilmagan.")
-        result = await client.chat(messages)
-        normalized_answer = result.content
+        if use_tools:
+            loop = AgentLoop(settings, registry, policy)
+            try:
+                agent_result = await loop.run(
+                    user_message=payload.message,
+                    history=history,
+                    context_text=rag_result.context.context_text if rag_result.context else None,
+                    max_input_chars=prompt_budget.max_input_chars,
+                    ollama_call=ollama_call,
+                )
+            except AgentError as exc:
+                raise ApiError(exc.status_code, exc.code, exc.message) from exc
+            normalized_answer = agent_result.answer
+            result_prompt_tokens = agent_result.prompt_tokens
+            result_completion_tokens = agent_result.completion_tokens
+            if not agent_result.rag_context_included:
+                returned_sources = []
+                rag_generation_id = None
+                rag_context_chars = 0
+                rag_retrieved_count = 0
+            tool_call_summaries = [
+                {
+                    "id": item.id,
+                    "name": item.name,
+                    "ok": item.ok,
+                    "execution_time_ms": item.execution_time_ms,
+                    "iteration": item.iteration,
+                    "error_code": item.error_code,
+                }
+                for item in agent_result.tool_calls
+            ]
+        else:
+            try:
+                messages = build_chat_messages(
+                    system_prompt=RAG_SYSTEM_PROMPT if rag_result.context else system_prompt,
+                    user_message=payload.message,
+                    history=history,
+                    context_text=rag_result.context.context_text if rag_result.context else None,
+                    max_chars=prompt_budget.max_input_chars,
+                )
+            except RagError as exc:
+                raise ApiError(exc.status_code, exc.code, exc.message) from exc
+            result = await ollama_call(messages)
+            normalized_answer = result.content
+            result_prompt_tokens = result.usage.prompt_tokens
+            result_completion_tokens = result.usage.completion_tokens
+
         invalid_citations_removed = 0
         citations_present = False
-        if rag_result.context is not None:
+        if returned_sources:
             normalized_answer, invalid_citations_removed, citations_present = normalize_citations(
-                result.content,
-                len(rag_result.context.sources),
+                normalized_answer,
+                len(returned_sources),
             )
         conversation_id = save_exchange(
             settings=settings,
@@ -132,24 +192,21 @@ async def chat(request: Request, payload: ChatRequest) -> ChatResponse:
         raise ApiError(502, "OLLAMA_INVALID_RESPONSE", "Ollama noto'g'ri javob qaytardi.") from None
     except (sqlite3.Error, RuntimeError):
         raise _database_error() from None
-    finally:
-        if acquired:
-            semaphore.release()
 
     execution_time_ms = int((perf_counter() - started_at) * 1000)
-    sources = rag_result.context.sources if rag_result.context else []
+    sources = returned_sources
     write_rag_chat_audit(
         settings,
         rag_enabled=rag_enabled,
-        rag_used=rag_result.used,
+        rag_used=bool(sources),
         fallback=rag_result.fallback,
         source_count=len(sources),
-        context_chars=rag_result.context.context_chars if rag_result.context else 0,
+        context_chars=rag_context_chars,
         retrieval_ms=retrieval_ms,
         citation_count=len(extract_citation_numbers(normalized_answer)),
         invalid_citation_count=invalid_citations_removed,
-        generation_id=rag_result.context.generation_id if rag_result.context else None,
-        prompt_input_chars=sum(len(message["content"]) for message in messages),
+        generation_id=rag_generation_id,
+        prompt_input_chars=0 if use_tools else sum(len(message["content"]) for message in messages),
         prompt_input_limit_chars=prompt_budget.max_input_chars,
         reserved_answer_chars=prompt_budget.reserved_answer_chars,
     )
@@ -158,19 +215,19 @@ async def chat(request: Request, payload: ChatRequest) -> ChatResponse:
         answer=normalized_answer,
         model=settings.ollama_model,
         sources=[RagSourceResponse(**source.__dict__) for source in sources],
-        tool_calls=[],
+        tool_calls=tool_call_summaries,
         execution_time_ms=execution_time_ms,
         usage=UsageSummary(
-            prompt_tokens=result.usage.prompt_tokens,
-            completion_tokens=result.usage.completion_tokens,
+            prompt_tokens=result_prompt_tokens,
+            completion_tokens=result_completion_tokens,
         ),
         rag=RagMetadataResponse(
             enabled=rag_enabled,
-            used=rag_result.used,
+            used=bool(sources),
             fallback=rag_result.fallback,
-            generation_id=rag_result.context.generation_id if rag_result.context else None,
-            retrieved_count=rag_result.context.retrieved_count if rag_result.context else 0,
-            context_chars=rag_result.context.context_chars if rag_result.context else 0,
+            generation_id=rag_generation_id,
+            retrieved_count=rag_retrieved_count,
+            context_chars=rag_context_chars,
             citations_present=citations_present,
             invalid_citations_removed=invalid_citations_removed,
         ),

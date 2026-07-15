@@ -9,6 +9,7 @@ class ChatRequest(BaseModel):
     message: str = Field(min_length=1)
     conversation_id: int | None = Field(default=None, ge=1)
     use_rag: bool | None = None
+    use_tools: bool | None = None
     document_ids: list[int] | None = None
 
     @field_validator("message", mode="before")

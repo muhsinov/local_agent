@@ -40,6 +40,10 @@
                     <input id="use-rag-checkbox" type="checkbox" checked>
                     <span>Use documents</span>
                 </label>
+                <label class="inline-option">
+                    <input id="use-tools-checkbox" type="checkbox">
+                    <span>Use tools</span>
+                </label>
                 <label class="inline-option grow">
                     <span>Document IDs (ixtiyoriy)</span>
                     <input id="chat-document-ids" type="text" placeholder="1,2,3">
@@ -65,6 +69,14 @@
                 </div>
                 <p id="rag-warning" class="muted-line">Hozircha source tanlanmagan.</p>
                 <div id="rag-sources" class="search-results"></div>
+            </article>
+            <article class="rag-panel">
+                <div class="preview-header">
+                    <h3>Tool Summary</h3>
+                    <span id="tool-meta">Tools off</span>
+                </div>
+                <p id="tool-warning" class="muted-line">Executed tool summary shu yerda ko'rinadi.</p>
+                <div id="tool-results" class="search-results"></div>
             </article>
         </section>
 

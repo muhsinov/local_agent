@@ -32,6 +32,8 @@ def _get_coordinator(request: Request) -> VectorOperationCoordinator:
 async def _run_vector_operation(request: Request, function, *args, **kwargs):
     settings = request.app.state.settings
     coordinator = _get_coordinator(request)
+    if coordinator.is_busy():
+        raise ApiError(429, "VECTOR_INDEX_BUSY", "Vector index hozir band. Keyinroq qayta urinib ko'ring.")
     try:
         return await coordinator.run(
             function,

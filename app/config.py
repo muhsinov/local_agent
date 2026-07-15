@@ -57,6 +57,17 @@ class Settings(BaseSettings):
     request_timeout_seconds: int = Field(default=90, alias="REQUEST_TIMEOUT_SECONDS", ge=1, le=300)
     max_agent_iterations: int = Field(default=5, alias="MAX_AGENT_ITERATIONS", ge=1, le=10)
     max_file_size_mb: int = Field(default=10, alias="MAX_FILE_SIZE_MB", ge=1, le=100)
+    tools_enabled: bool = Field(default=True, alias="TOOLS_ENABLED")
+    agent_max_iterations: int = Field(default=5, alias="AGENT_MAX_ITERATIONS", ge=1, le=10)
+    agent_total_timeout_seconds: int = Field(default=60, alias="AGENT_TOTAL_TIMEOUT_SECONDS", ge=5, le=300)
+    agent_tool_timeout_seconds: int = Field(default=10, alias="AGENT_TOOL_TIMEOUT_SECONDS", ge=1, le=60)
+    agent_max_tool_calls: int = Field(default=5, alias="AGENT_MAX_TOOL_CALLS", ge=1, le=20)
+    agent_max_tool_result_chars: int = Field(default=12000, alias="AGENT_MAX_TOOL_RESULT_CHARS", ge=1000, le=50000)
+    agent_max_single_tool_result_chars: int = Field(default=5000, alias="AGENT_MAX_SINGLE_TOOL_RESULT_CHARS", ge=200, le=20000)
+    agent_max_argument_chars: int = Field(default=4000, alias="AGENT_MAX_ARGUMENT_CHARS", ge=100, le=10000)
+    agent_max_path_chars: int = Field(default=500, alias="AGENT_MAX_PATH_CHARS", ge=50, le=1000)
+    agent_include_tool_errors_in_prompt: bool = Field(default=True, alias="AGENT_INCLUDE_TOOL_ERRORS_IN_PROMPT")
+    agent_require_explicit_tool_intent: bool = Field(default=True, alias="AGENT_REQUIRE_EXPLICIT_TOOL_INTENT")
     embedding_model_name: str = Field(
         default="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
         alias="EMBEDDING_MODEL_NAME",
@@ -163,6 +174,10 @@ class Settings(BaseSettings):
             raise ValueError("RAG_TOP_K RAG_MAX_TOP_K dan katta bo'lishi mumkin emas.")
         if self.rag_max_sources > self.rag_max_top_k:
             raise ValueError("RAG_MAX_SOURCES RAG_MAX_TOP_K dan katta bo'lishi mumkin emas.")
+        if self.agent_tool_timeout_seconds > self.agent_total_timeout_seconds:
+            raise ValueError("AGENT_TOOL_TIMEOUT_SECONDS AGENT_TOTAL_TIMEOUT_SECONDS dan katta bo'lishi mumkin emas.")
+        if self.agent_max_tool_calls > self.agent_max_iterations:
+            raise ValueError("AGENT_MAX_TOOL_CALLS AGENT_MAX_ITERATIONS dan katta bo'lishi mumkin emas.")
         return self
 
     @property

@@ -51,6 +51,9 @@ class VectorOperationCoordinator:
         except asyncio.CancelledError:
             raise
 
+    def is_busy(self) -> bool:
+        return self._active_operation is not None and not self._active_operation.done()
+
     async def shutdown(self, timeout_seconds: float = 1.0) -> None:
         active = self._active_operation
         if active is None:

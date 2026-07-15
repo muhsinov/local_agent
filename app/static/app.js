@@ -8,7 +8,11 @@ const ragMeta = document.getElementById("rag-meta");
 const ragWarning = document.getElementById("rag-warning");
 const ragSources = document.getElementById("rag-sources");
 const useRagCheckbox = document.getElementById("use-rag-checkbox");
+const useToolsCheckbox = document.getElementById("use-tools-checkbox");
 const chatDocumentIds = document.getElementById("chat-document-ids");
+const toolMeta = document.getElementById("tool-meta");
+const toolWarning = document.getElementById("tool-warning");
+const toolResults = document.getElementById("tool-results");
 const chatForm = document.getElementById("chat-form");
 const messageInput = document.getElementById("message-input");
 const chatHistory = document.getElementById("chat-history");
@@ -106,8 +110,37 @@ function setLoadingState(isLoading) {
   sendButton.disabled = isLoading;
   messageInput.disabled = isLoading;
   useRagCheckbox.disabled = isLoading;
+  useToolsCheckbox.disabled = isLoading;
   chatDocumentIds.disabled = isLoading;
   loadingIndicator.hidden = !isLoading;
+}
+
+function renderToolSummaries(items) {
+  toolResults.textContent = "";
+  if (!items.length) {
+    toolMeta.textContent = useToolsCheckbox.checked ? "No tool call" : "Tools off";
+    toolWarning.textContent = useToolsCheckbox.checked
+      ? "Bu javobda tool bajarilmadi."
+      : "Tool calling faqat explicit local intent bilan ishlaydi.";
+    return;
+  }
+  const maxIteration = Math.max(...items.map((item) => item.iteration || 0));
+  toolMeta.textContent = `iterations=${maxIteration} calls=${items.length}`;
+  toolWarning.textContent = items.some((item) => item.ok === false)
+    ? "Ba'zi tool call muvaffaqiyatsiz tugadi."
+    : "Executed tool summary.";
+  items.forEach((item) => {
+    const card = document.createElement("article");
+    card.className = "search-result";
+    const title = document.createElement("strong");
+    title.textContent = `${item.name} - ${item.ok ? "ok" : item.error_code || "error"}`;
+    const meta = document.createElement("p");
+    meta.className = "muted-line";
+    meta.textContent = `id=${item.id} - iteration=${item.iteration} - ${item.execution_time_ms}ms`;
+    card.appendChild(title);
+    card.appendChild(meta);
+    toolResults.appendChild(card);
+  });
 }
 
 function renderRagSources(sources) {
@@ -159,6 +192,7 @@ async function submitChat() {
         message: content,
         conversation_id: conversationId,
         use_rag: useRagCheckbox.checked,
+        use_tools: useToolsCheckbox.checked,
         document_ids: parseDocumentIds(chatDocumentIds.value),
       }),
     });
@@ -185,6 +219,7 @@ async function submitChat() {
         ? "Citation markerlari answer ichida bo'lishi mumkin."
         : "Source ishlatilmagan.";
     renderRagSources(payload.sources || []);
+    renderToolSummaries(payload.tool_calls || []);
   } catch (error) {
     appendMessage("Backend bilan bog'lanib bo'lmadi.", "system");
   } finally {
@@ -393,3 +428,4 @@ loadHealthStatus();
 loadModelStatus();
 refreshVectorStatus();
 refreshDocuments();
+renderToolSummaries([]);

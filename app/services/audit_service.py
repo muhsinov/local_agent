@@ -41,6 +41,14 @@ def write_audit_log(
             "prompt_input_chars",
             "prompt_input_limit_chars",
             "reserved_answer_chars",
+            "tool_name",
+            "truncated",
+            "iteration",
+            "error_code",
+            "success",
+            "call_count",
+            "iterations",
+            "final_status",
         }
     }
     try:
