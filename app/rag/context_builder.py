@@ -1,14 +1,57 @@
+from xml.sax.saxutils import escape
+
 from app.rag.models import RagContext, RagSource, RetrievedChunk
 
 
 MIN_MEANINGFUL_EXCERPT_CHARS = 24
 
 
-def _escape_block(text: str) -> str:
-    return text.replace("<", "&lt;").replace(">", "&gt;").strip()
+def escape_rag_text(text: str) -> str:
+    return escape(str(text)).strip()
 
 
-def _deduplicate_excerpt(previous: str, current: str) -> str:
+def escape_text_to_budget(text: str, max_chars: int) -> str:
+    if max_chars <= 0:
+        return ""
+    parts: list[str] = []
+    used = 0
+    for char in str(text).strip():
+        encoded = escape(char)
+        if used + len(encoded) > max_chars:
+            break
+        parts.append(encoded)
+        used += len(encoded)
+    return "".join(parts).rstrip()
+
+
+def truncate_escaped_text(text: str, max_chars: int) -> str:
+    if max_chars <= 0:
+        return ""
+    result: list[str] = []
+    used = 0
+    index = 0
+    while index < len(text):
+        if text[index] == "&":
+            end = text.find(";", index + 1)
+            if end != -1:
+                token = text[index : end + 1]
+                if used + len(token) > max_chars:
+                    break
+                result.append(token)
+                used += len(token)
+                index = end + 1
+                continue
+            index += 1
+            continue
+        if used + 1 > max_chars:
+            break
+        result.append(text[index])
+        used += 1
+        index += 1
+    return "".join(result).rstrip()
+
+
+def deduplicate_excerpt(previous: str, current: str) -> str:
     max_overlap = min(len(previous), len(current), 200)
     for size in range(max_overlap, 20, -1):
         if previous.endswith(current[:size]):
@@ -27,18 +70,12 @@ def _build_block(
 ) -> str:
     lines = [citation]
     if include_file_name:
-        lines.append(f"File: {file_name}")
+        lines.append(f"File: {escape_rag_text(file_name)}")
     if include_chunk_index:
         lines.append(f"Chunk: {chunk_index}")
     lines.append("Content:")
     lines.append(excerpt)
     return "\n".join(lines)
-
-
-def _truncate_to_budget(text: str, budget: int) -> str:
-    if budget <= 0:
-        return ""
-    return text[:budget].rstrip()
 
 
 def build_rag_context(
@@ -64,7 +101,7 @@ def build_rag_context(
         if chunk.chunk_id in seen_chunk_ids or len(sources) >= max_sources:
             continue
         seen_chunk_ids.add(chunk.chunk_id)
-        excerpt = _escape_block(chunk.text)[:max_chunk_chars].strip()
+        excerpt = escape_text_to_budget(chunk.text, max_chunk_chars)
         if (
             deduplicate_overlap
             and previous_excerpt
@@ -72,7 +109,7 @@ def build_rag_context(
             and previous_chunk_index is not None
             and abs(previous_chunk_index - chunk.chunk_index) <= 1
         ):
-            excerpt = _deduplicate_excerpt(previous_excerpt, excerpt)
+            excerpt = deduplicate_excerpt(previous_excerpt, excerpt)
         if not excerpt.strip():
             continue
 
@@ -101,7 +138,7 @@ def build_rag_context(
             excerpt_budget = remaining_budget - len(header)
             if excerpt_budget < MIN_MEANINGFUL_EXCERPT_CHARS:
                 continue
-            excerpt = _truncate_to_budget(excerpt, min(max_chunk_chars, excerpt_budget))
+            excerpt = truncate_escaped_text(excerpt, min(max_chunk_chars, excerpt_budget))
             if len(excerpt) < MIN_MEANINGFUL_EXCERPT_CHARS:
                 continue
             block = _build_block(
@@ -113,7 +150,7 @@ def build_rag_context(
                 include_chunk_index=include_chunk_index,
             )
             if len(block) > remaining_budget:
-                excerpt = _truncate_to_budget(excerpt, excerpt_budget - (len(block) - remaining_budget))
+                excerpt = truncate_escaped_text(excerpt, excerpt_budget - (len(block) - remaining_budget))
                 if len(excerpt) < MIN_MEANINGFUL_EXCERPT_CHARS:
                     continue
                 block = _build_block(

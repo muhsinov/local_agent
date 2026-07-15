@@ -195,7 +195,7 @@ def get_approval_result_message(settings, approval: ApprovalRecord) -> str | Non
 
 
 def get_approval_result_sources(settings, approval: ApprovalRecord) -> list[dict]:
-    from app.rag.context_builder import _deduplicate_excerpt, _escape_block
+    from app.rag.context_builder import deduplicate_excerpt, escape_text_to_budget, truncate_escaped_text
 
     def safe_int(value, default=0):
         return value if isinstance(value, int) and not isinstance(value, bool) else default
@@ -258,13 +258,13 @@ def get_approval_result_sources(settings, approval: ApprovalRecord) -> list[dict
                 }
             )
             continue
-        excerpt = _escape_block(str(row["text"]))[:max_chunk_chars].strip()
+        excerpt = escape_text_to_budget(str(row["text"]), max_chunk_chars)
         document_id = int(row["document_id"])
         chunk_index = int(row["chunk_index"])
         if deduplicate_overlap and previous_excerpt and previous_document_id == document_id and previous_chunk_index is not None and abs(previous_chunk_index - chunk_index) <= 1:
-            excerpt = _deduplicate_excerpt(previous_excerpt, excerpt)
+            excerpt = deduplicate_excerpt(previous_excerpt, excerpt)
         excerpt_length = safe_int(item.get("excerpt_length"), len(excerpt))
-        excerpt = excerpt[:max(0, excerpt_length)].strip()
+        excerpt = truncate_escaped_text(excerpt, max(0, excerpt_length))
         sources.append(
             {
                 "citation": str(item.get("citation", f"[{index}]")),

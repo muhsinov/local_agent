@@ -5,6 +5,7 @@ from app.agent.errors import AgentError
 from app.approval.errors import ApprovalError
 from app.agent.parser import parse_agent_response
 from app.rag.exceptions import RagError
+from app.rag.context_builder import truncate_escaped_text
 from app.rag.citation import normalize_citations
 from app.rag.prompt_builder import DOCUMENTS_PREFIX, DOCUMENTS_SUFFIX, calculate_prompt_budget
 from app.services.conversation_service import get_recent_messages
@@ -43,21 +44,12 @@ def render_approved_action_result(*, approval_id: str, tool_name: str, content: 
 
 def _fit_context(context_text: str, max_chars: int) -> str:
     # RagService already returns an XML-safe documents block payload.
-    escaped = context_text
+    escaped = truncate_escaped_text(context_text, max_chars - len(DOCUMENTS_PREFIX) - len(DOCUMENTS_SUFFIX))
     if len(DOCUMENTS_PREFIX) + len(escaped) + len(DOCUMENTS_SUFFIX) <= max_chars:
         return f"{DOCUMENTS_PREFIX}{escaped}{DOCUMENTS_SUFFIX}"
     if len(DOCUMENTS_PREFIX) + len(DOCUMENTS_SUFFIX) > max_chars:
         return ""
-    low, high, best = 0, len(context_text), ""
-    while low <= high:
-        mid = (low + high) // 2
-        candidate = context_text[:mid]
-        if len(DOCUMENTS_PREFIX) + len(candidate) + len(DOCUMENTS_SUFFIX) <= max_chars:
-            best = candidate
-            low = mid + 1
-        else:
-            high = mid - 1
-    return f"{DOCUMENTS_PREFIX}{best}{DOCUMENTS_SUFFIX}"
+    return ""
 
 
 def build_resume_messages(*, history, original_user_message: str, action_result_text: str, context_text: str | None, max_chars: int):

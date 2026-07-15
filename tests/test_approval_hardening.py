@@ -118,6 +118,21 @@ def test_resume_message_boundary_and_budget():
     assert messages[-1]["content"] == action
 
 
+def test_resume_context_truncation_keeps_documents_wrapper_bounded():
+    context = "[1]\nContent:\nA &amp; B &lt;tag&gt;"
+    messages = build_resume_messages(
+        history=[],
+        original_user_message="question",
+        action_result_text="result",
+        context_text=context,
+        max_chars=len(RESUME_SYSTEM_PROMPT) + len("question") + len("result") + 38,
+    )
+    document = messages[1]["content"]
+    assert document.startswith("<documents>\n")
+    assert document.endswith("\n</documents>")
+    assert not document.endswith(("&", "&a", "&am", "&l"))
+
+
 def test_resume_action_minimum_wrapper_must_fit():
     from app.rag.exceptions import RagError
 
@@ -227,13 +242,13 @@ def test_delayed_source_reconstruction_preserves_score_excerpt_and_order(tmp_pat
             INSERT INTO document_chunks (document_id, chunk_index, text, start_char, end_char, char_count, content_sha256)
             VALUES (?, 0, ?, 0, 20, 20, 'hash');
             """,
-            (document_id, "<alpha>12345678901234567890"),
+            (document_id, "A & B <alpha>12345678901234567890"),
         )
         chunk_id = connection.execute("SELECT last_insert_rowid();").fetchone()[0]
         connection.commit()
     _create(settings)
     assert mark_executing(settings, "approval-1") == 1
-    expected_excerpt = "&lt;alpha&gt;1234567"
+    expected_excerpt = "A &amp; B &lt;alpha"
     save_exchange_and_finalize_approval(
         settings,
         approval_id="approval-1",
