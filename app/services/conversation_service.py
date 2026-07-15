@@ -47,6 +47,18 @@ def get_recent_messages(settings: Settings, conversation_id: int, limit: int) ->
     return [{"role": str(row["role"]), "content": str(row["content"])} for row in chronological_rows]
 
 
+def rename_conversation(connection: sqlite3.Connection, conversation_id: int, new_title: str) -> bool:
+    cursor = connection.execute(
+        """
+        UPDATE conversations
+        SET title = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?;
+        """,
+        (new_title[:80], conversation_id),
+    )
+    return cursor.rowcount > 0
+
+
 def save_exchange(
     settings: Settings,
     conversation_id: int | None,

@@ -48,7 +48,7 @@ def test_required_tables_are_created(tmp_path: Path) -> None:
             """
             SELECT name
             FROM sqlite_master
-            WHERE type = 'table' AND name IN ('conversations', 'messages', 'documents', 'audit_logs', 'document_chunks', 'vector_index_state');
+            WHERE type = 'table' AND name IN ('conversations', 'messages', 'documents', 'audit_logs', 'document_chunks', 'vector_index_state', 'approval_requests');
             """
         ).fetchall()
 
@@ -59,6 +59,7 @@ def test_required_tables_are_created(tmp_path: Path) -> None:
         "audit_logs",
         "document_chunks",
         "vector_index_state",
+        "approval_requests",
     }
 
 
@@ -74,11 +75,13 @@ def test_documents_and_audit_logs_columns_match_spec(tmp_path: Path) -> None:
         audit_logs = connection.execute("PRAGMA table_info(audit_logs);").fetchall()
         document_chunks = connection.execute("PRAGMA table_info(document_chunks);").fetchall()
         vector_index_state = connection.execute("PRAGMA table_info(vector_index_state);").fetchall()
+        approval_requests = connection.execute("PRAGMA table_info(approval_requests);").fetchall()
 
     document_columns = {column[1] for column in documents}
     audit_columns = {column[1] for column in audit_logs}
     chunk_columns = {column[1] for column in document_chunks}
     state_columns = {column[1] for column in vector_index_state}
+    approval_columns = {column[1] for column in approval_requests}
     assert {
         "id",
         "file_name",
@@ -100,6 +103,9 @@ def test_documents_and_audit_logs_columns_match_spec(tmp_path: Path) -> None:
         chunk_columns
     )
     assert {"active_generation", "status", "chunk_count", "document_count", "dirty"}.issubset(state_columns)
+    assert {"tool_name", "arguments_json", "arguments_sha256", "nonce_sha256", "status", "safe_summary"}.issubset(
+        approval_columns
+    )
 
 
 def test_invalid_config_values_raise_validation_error() -> None:
@@ -221,8 +227,30 @@ def test_check_database_rejects_missing_messages_foreign_key(tmp_path: Path) -> 
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
         INSERT INTO vector_index_state(id, status, chunk_count, document_count, dirty) VALUES (1, 'empty', 0, 0, 0);
-        INSERT INTO schema_version(version) VALUES (3);
-        PRAGMA user_version = 3;
+        CREATE TABLE approval_requests (
+            id TEXT PRIMARY KEY,
+            conversation_id INTEGER NULL,
+            tool_call_id TEXT NOT NULL,
+            tool_name TEXT NOT NULL,
+            arguments_json TEXT NOT NULL,
+            arguments_sha256 TEXT NOT NULL,
+            nonce_sha256 TEXT NOT NULL,
+            original_user_message TEXT NOT NULL,
+            use_rag INTEGER NOT NULL DEFAULT 0,
+            document_ids_json TEXT NULL,
+            status TEXT NOT NULL,
+            safe_summary TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            expires_at TEXT NOT NULL,
+            executing_at TEXT NULL,
+            completed_at TEXT NULL,
+            error_code TEXT NULL,
+            execution_result_json TEXT NULL
+        );
+        CREATE INDEX idx_approval_requests_status ON approval_requests(status);
+        CREATE INDEX idx_approval_requests_expires_at ON approval_requests(expires_at);
+        INSERT INTO schema_version(version) VALUES (4);
+        PRAGMA user_version = 4;
         """
     )
     connection.commit()

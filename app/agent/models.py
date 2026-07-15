@@ -8,6 +8,8 @@ class ToolDefinition:
     input_schema: dict
     read_only: bool
     timeout_seconds: int
+    requires_approval: bool = False
+    write_effect: bool = False
 
 
 @dataclass(frozen=True)
@@ -36,14 +38,22 @@ class ToolCallSummary:
     execution_time_ms: int
     iteration: int
     error_code: str | None = None
+    safe_summary: str | None = None
+    requires_approval: bool = False
+
+
+@dataclass(frozen=True)
+class ApprovalRequired:
+    tool_call: ToolCall
+    safe_summary: str
 
 
 @dataclass(frozen=True)
 class AgentLoopResult:
     answer: str
     tool_calls: list[ToolCallSummary] = field(default_factory=list)
+    approval_required: ApprovalRequired | None = None
     iterations: int = 0
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     rag_context_included: bool = False
-

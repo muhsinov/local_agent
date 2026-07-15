@@ -3,8 +3,9 @@ import sqlite3
 
 from app.agent.errors import AgentError
 from app.database import connection_scope
-from app.schemas.tools import ConversationMessagesArgs, PaginationArgs
-from app.tools.base import ReadOnlyTool
+from app.schemas.tools import ConversationMessagesArgs, PaginationArgs, RenameConversationArgs
+from app.services.conversation_service import rename_conversation
+from app.tools.base import ApprovalRequiredTool, ReadOnlyTool
 
 
 class ListConversationsTool(ReadOnlyTool):
@@ -75,3 +76,36 @@ class GetConversationMessagesTool(ReadOnlyTool):
             ensure_ascii=False,
         )
 
+
+class RenameConversationTool(ApprovalRequiredTool):
+    input_model = RenameConversationArgs
+
+    def __init__(self, timeout_seconds: int) -> None:
+        super().__init__(
+            name="rename_conversation",
+            description="Rename a conversation title after explicit human approval.",
+            timeout_seconds=timeout_seconds,
+        )
+
+    def build_safe_summary(self, arguments: RenameConversationArgs) -> str:
+        return f'Conversation #{arguments.conversation_id} nomini "{arguments.new_title}"ga o‘zgartirish'
+
+    async def execute_with_approval(self, arguments: RenameConversationArgs, settings, **kwargs) -> str:
+        with connection_scope(settings) as connection:
+            connection.execute("BEGIN;")
+            try:
+                updated = rename_conversation(connection, arguments.conversation_id, arguments.new_title)
+                if not updated:
+                    raise AgentError(404, "CONVERSATION_NOT_FOUND", "Conversation topilmadi.")
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+        return json.dumps(
+            {
+                "conversation_id": arguments.conversation_id,
+                "title": arguments.new_title,
+                "status": "renamed",
+            },
+            ensure_ascii=False,
+        )

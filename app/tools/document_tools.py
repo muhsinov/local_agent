@@ -6,10 +6,11 @@ from app.agent.errors import AgentError
 from app.api.errors import ApiError
 from app.documents.storage import resolve_storage_path
 from app.rag.exceptions import RagError
+from app.rag.index_manager import rebuild_vector_index
 from app.rag.search_service import semantic_search
-from app.schemas.tools import DocumentExcerptArgs, DocumentIdArgs, PaginationArgs, SearchDocumentsArgs
+from app.schemas.tools import DocumentExcerptArgs, DocumentIdArgs, EmptyArgs, PaginationArgs, SearchDocumentsArgs
 from app.services.document_service import get_document, list_documents
-from app.tools.base import ReadOnlyTool
+from app.tools.base import ApprovalRequiredTool, ReadOnlyTool
 
 
 def _read_excerpt(path: Path, start_char: int, max_chars: int) -> str:
@@ -139,3 +140,41 @@ class SearchDocumentsTool(ReadOnlyTool):
             ],
         }
         return json.dumps(payload, ensure_ascii=False)
+
+
+class RebuildVectorIndexTool(ApprovalRequiredTool):
+    input_model = EmptyArgs
+
+    def __init__(self, timeout_seconds: int) -> None:
+        super().__init__(
+            name="rebuild_vector_index",
+            description="Rebuild the vector index after explicit human approval.",
+            timeout_seconds=timeout_seconds,
+        )
+
+    def build_safe_summary(self, arguments: EmptyArgs) -> str:
+        return "Barcha extracted hujjatlar uchun vector indexni qayta qurish"
+
+    async def execute_with_approval(self, arguments: EmptyArgs, settings, **kwargs) -> str:
+        coordinator = kwargs.get("coordinator")
+        if coordinator is None:
+            raise AgentError(500, "VECTOR_INDEX_ERROR", "Vector coordinator topilmadi.")
+        try:
+            state = await coordinator.run(
+                rebuild_vector_index,
+                settings,
+                acquire_timeout_seconds=settings.vector_index_busy_timeout_seconds,
+            )
+        except TimeoutError as exc:
+            raise AgentError(429, "VECTOR_INDEX_BUSY", "Vector index hozir band. Keyinroq qayta urinib ko'ring.") from exc
+        except RagError as exc:
+            raise AgentError(exc.status_code, exc.code, exc.message) from exc
+        return json.dumps(
+            {
+                "status": state.status,
+                "generation_id": state.active_generation,
+                "document_count": state.document_count,
+                "chunk_count": state.chunk_count,
+            },
+            ensure_ascii=False,
+        )

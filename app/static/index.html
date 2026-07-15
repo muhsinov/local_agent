@@ -10,9 +10,9 @@
     <main class="layout">
         <section class="hero">
             <div>
-                <p class="eyebrow">Phase 5 grounded RAG chat</p>
+                <p class="eyebrow">Phase 7 approval-gated local actions</p>
                 <h1>Local Agent Demo</h1>
-                <p class="subtitle">Chat endi document context, citations va fallback behavior bilan ishlaydi. Tool calling hali yo'q.</p>
+                <p class="subtitle">Read-only tools, grounded RAG va explicit human approval bilan cheklangan lokal agent.</p>
             </div>
             <div class="status-grid">
                 <article class="status-card">
@@ -77,6 +77,18 @@
                 </div>
                 <p id="tool-warning" class="muted-line">Executed tool summary shu yerda ko'rinadi.</p>
                 <div id="tool-results" class="search-results"></div>
+            </article>
+            <article id="approval-panel" class="rag-panel approval-panel" hidden>
+                <div class="preview-header">
+                    <h3>Approval</h3>
+                    <span id="approval-badge" class="approval-badge">pending</span>
+                </div>
+                <p id="approval-summary" class="approval-summary"></p>
+                <p id="approval-meta" class="muted-line"></p>
+                <div class="approval-actions">
+                    <button id="approve-button" type="button">Approve</button>
+                    <button id="reject-button" type="button" class="secondary-button">Reject</button>
+                </div>
             </article>
         </section>
 

@@ -19,6 +19,8 @@ class ToolExecutor:
         self._coordinator = coordinator or ToolOperationCoordinator()
 
     async def execute(self, *, tool, call, iteration: int, deadline: float) -> ToolResult:
+        if getattr(tool.definition, "requires_approval", False):
+            raise AgentError(403, "TOOL_APPROVAL_REQUIRED", "Bu tool explicit approval talab qiladi.")
         started = perf_counter()
         result: ToolResult | None = None
         try:

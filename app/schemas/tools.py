@@ -50,3 +50,20 @@ class SearchDocumentsArgs(_StrictModel):
 class ConversationMessagesArgs(_StrictModel):
     conversation_id: int = Field(ge=1)
     limit: int = Field(default=20, ge=1, le=100)
+
+
+class RenameConversationArgs(_StrictModel):
+    conversation_id: int = Field(ge=1)
+    new_title: str = Field(min_length=1, max_length=80)
+
+    @field_validator("new_title", mode="after")
+    @classmethod
+    def validate_new_title(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized or len(normalized) > 80:
+            raise ValueError("new_title noto'g'ri.")
+        if any(ord(char) < 32 or ord(char) == 127 for char in normalized):
+            raise ValueError("new_title control character saqlamasligi kerak.")
+        if "\n" in normalized or "\r" in normalized:
+            raise ValueError("new_title newline saqlamasligi kerak.")
+        return normalized

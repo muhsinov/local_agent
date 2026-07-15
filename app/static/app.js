@@ -13,6 +13,12 @@ const chatDocumentIds = document.getElementById("chat-document-ids");
 const toolMeta = document.getElementById("tool-meta");
 const toolWarning = document.getElementById("tool-warning");
 const toolResults = document.getElementById("tool-results");
+const approvalPanel = document.getElementById("approval-panel");
+const approvalBadge = document.getElementById("approval-badge");
+const approvalSummary = document.getElementById("approval-summary");
+const approvalMeta = document.getElementById("approval-meta");
+const approveButton = document.getElementById("approve-button");
+const rejectButton = document.getElementById("reject-button");
 const chatForm = document.getElementById("chat-form");
 const messageInput = document.getElementById("message-input");
 const chatHistory = document.getElementById("chat-history");
@@ -28,6 +34,8 @@ const documentPreview = document.getElementById("document-preview");
 const previewMeta = document.getElementById("preview-meta");
 
 let conversationId = null;
+let pendingApproval = null;
+let approvalCountdownTimer = null;
 
 async function safeJson(response) {
   try {
@@ -133,14 +141,108 @@ function renderToolSummaries(items) {
     const card = document.createElement("article");
     card.className = "search-result";
     const title = document.createElement("strong");
-    title.textContent = `${item.name} - ${item.ok ? "ok" : item.error_code || "error"}`;
+    title.textContent = item.requires_approval
+      ? `${item.name} - Approval required`
+      : `${item.name} - ${item.ok ? "ok" : item.error_code || "error"}`;
     const meta = document.createElement("p");
     meta.className = "muted-line";
-    meta.textContent = `id=${item.id} - iteration=${item.iteration} - ${item.execution_time_ms}ms`;
+    meta.textContent = item.requires_approval
+      ? item.safe_summary || "Approval required"
+      : `id=${item.id} - iteration=${item.iteration} - ${item.execution_time_ms}ms`;
     card.appendChild(title);
     card.appendChild(meta);
     toolResults.appendChild(card);
   });
+}
+
+function clearApprovalTimer() {
+  if (approvalCountdownTimer !== null) {
+    window.clearInterval(approvalCountdownTimer);
+    approvalCountdownTimer = null;
+  }
+}
+
+function clearApprovalState() {
+  clearApprovalTimer();
+  pendingApproval = null;
+  approvalPanel.hidden = true;
+  approveButton.disabled = false;
+  rejectButton.disabled = false;
+}
+
+function renderApprovalCard(approval) {
+  clearApprovalTimer();
+  pendingApproval = {
+    approvalId: approval.approval_id,
+    nonce: approval.nonce,
+    toolName: approval.tool_name,
+    expiresAt: approval.expires_at,
+  };
+  approvalPanel.hidden = false;
+  approvalBadge.textContent = "pending";
+  approvalSummary.textContent = approval.safe_summary;
+
+  const refreshMeta = () => {
+    const expiresMs = Date.parse(approval.expires_at);
+    const seconds = Number.isNaN(expiresMs) ? null : Math.max(0, Math.floor((expiresMs - Date.now()) / 1000));
+    approvalMeta.textContent = seconds === null ? `expires=${approval.expires_at}` : `expires in ${seconds}s`;
+    if (seconds === 0) {
+      approvalBadge.textContent = "expired";
+      approveButton.disabled = true;
+      rejectButton.disabled = true;
+      if (pendingApproval) {
+        pendingApproval.nonce = null;
+      }
+      clearApprovalTimer();
+    }
+  };
+
+  refreshMeta();
+  approvalCountdownTimer = window.setInterval(refreshMeta, 1000);
+}
+
+async function submitApprovalDecision(kind) {
+  if (!pendingApproval || !pendingApproval.nonce) {
+    return;
+  }
+  approveButton.disabled = true;
+  rejectButton.disabled = true;
+  approvalBadge.textContent = kind === "approve" ? "executing" : "rejecting";
+  try {
+    const response = await fetch(`/approvals/${pendingApproval.approvalId}/${kind}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ nonce: pendingApproval.nonce }),
+    });
+    const payload = await safeJson(response);
+    if (!payload) {
+      appendMessage("Approval javobi noto'g'ri.", "system");
+      clearApprovalState();
+      return;
+    }
+    if (!response.ok) {
+      approvalBadge.textContent = payload?.detail?.code || "failed";
+      approvalMeta.textContent = apiMessage(payload, "Approval bajarilmadi.");
+      approveButton.disabled = false;
+      rejectButton.disabled = false;
+      return;
+    }
+    pendingApproval.nonce = null;
+    approvalBadge.textContent = payload.status;
+    approvalMeta.textContent = payload.error_code || `expires=${payload.expires_at}`;
+    if (kind === "approve" && payload.answer) {
+      conversationId = payload.conversation_id_result || conversationId;
+      appendMessage(payload.answer, "system");
+    }
+    if (kind === "reject") {
+      appendMessage("Action rad etildi.", "system");
+    }
+  } catch (error) {
+    approvalBadge.textContent = "failed";
+    approvalMeta.textContent = "Approval so'rovini yuborib bo'lmadi.";
+  } finally {
+    clearApprovalTimer();
+  }
 }
 
 function renderRagSources(sources) {
@@ -185,6 +287,7 @@ async function submitChat() {
   messageInput.value = "";
   setLoadingState(true);
   try {
+    clearApprovalState();
     const response = await fetch("/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -207,6 +310,9 @@ async function submitChat() {
     }
     conversationId = payload.conversation_id;
     appendMessage(payload.answer, "system");
+    if (payload.approval?.required) {
+      renderApprovalCard(payload.approval);
+    }
     chatStatus.textContent = payload.rag.used
       ? "Javob hujjatlar bilan grounded qilindi."
       : payload.rag.fallback
@@ -423,6 +529,8 @@ messageInput.addEventListener("keydown", async (event) => {
 
 documentForm.addEventListener("submit", uploadDocument);
 rebuildIndexButton.addEventListener("click", rebuildIndex);
+approveButton.addEventListener("click", async () => submitApprovalDecision("approve"));
+rejectButton.addEventListener("click", async () => submitApprovalDecision("reject"));
 
 loadHealthStatus();
 loadModelStatus();

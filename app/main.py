@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.api.approvals import router as approvals_router
 from app.api.chat import router as chat_router
 from app.api.documents import router as documents_router
 from app.api.errors import ApiError, error_response
@@ -16,6 +17,7 @@ from app.api.model import router as model_router
 from app.api.vector_search import router as vector_router
 from app.config import PROJECT_ROOT, Settings, get_settings
 from app.database import initialize_database
+from app.approval.repository import expire_pending_approvals
 from app.llm.ollama_client import OllamaClient
 from app.agent.tool_operation_coordinator import ToolOperationCoordinator
 from app.rag.index_manager import ensure_vector_directories, reconcile_vector_index
@@ -28,6 +30,7 @@ def ensure_runtime_directories(settings: Settings) -> None:
     settings.resolved_extracted_text_directory.mkdir(parents=True, exist_ok=True)
     ensure_vector_directories(settings)
     initialize_database(settings)
+    expire_pending_approvals(settings)
     reconcile_document_quarantine(settings)
     reconcile_vector_index(settings)
 
@@ -87,6 +90,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health_router)
     app.include_router(model_router)
     app.include_router(chat_router)
+    app.include_router(approvals_router)
     app.include_router(documents_router)
     app.include_router(vector_router)
 

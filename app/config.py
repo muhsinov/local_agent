@@ -68,6 +68,19 @@ class Settings(BaseSettings):
     agent_max_path_chars: int = Field(default=500, alias="AGENT_MAX_PATH_CHARS", ge=50, le=1000)
     agent_include_tool_errors_in_prompt: bool = Field(default=True, alias="AGENT_INCLUDE_TOOL_ERRORS_IN_PROMPT")
     agent_require_explicit_tool_intent: bool = Field(default=True, alias="AGENT_REQUIRE_EXPLICIT_TOOL_INTENT")
+    approvals_enabled: bool = Field(default=True, alias="APPROVALS_ENABLED")
+    approval_expiry_seconds: int = Field(default=600, alias="APPROVAL_EXPIRY_SECONDS", ge=30, le=3600)
+    approval_nonce_bytes: int = Field(default=32, alias="APPROVAL_NONCE_BYTES", ge=16, le=64)
+    approval_max_pending: int = Field(default=20, alias="APPROVAL_MAX_PENDING", ge=1, le=100)
+    approval_execution_timeout_seconds: int = Field(
+        default=60,
+        alias="APPROVAL_EXECUTION_TIMEOUT_SECONDS",
+        ge=5,
+        le=300,
+    )
+    approval_require_local_origin: bool = Field(default=True, alias="APPROVAL_REQUIRE_LOCAL_ORIGIN")
+    approval_allow_rebuild_vector_index: bool = Field(default=True, alias="APPROVAL_ALLOW_REBUILD_VECTOR_INDEX")
+    approval_allow_rename_conversation: bool = Field(default=True, alias="APPROVAL_ALLOW_RENAME_CONVERSATION")
     embedding_model_name: str = Field(
         default="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
         alias="EMBEDDING_MODEL_NAME",

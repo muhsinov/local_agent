@@ -199,6 +199,37 @@ h1 {
   padding: 16px;
 }
 
+.approval-panel {
+  background: linear-gradient(135deg, rgba(250, 244, 225, 0.96), rgba(231, 246, 234, 0.96));
+}
+
+.approval-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 96px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: #f2c94c;
+  color: #3b2f11;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.approval-summary {
+  font-size: 1rem;
+}
+
+.approval-actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.secondary-button {
+  background: #6b7280;
+}
+
 .document-preview,
 .result-text {
   white-space: pre-wrap;

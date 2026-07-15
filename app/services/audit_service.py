@@ -49,6 +49,10 @@ def write_audit_log(
             "call_count",
             "iterations",
             "final_status",
+            "approval_id",
+            "conversation_id",
+            "expired",
+            "argument_hash_prefix",
         }
     }
     try:

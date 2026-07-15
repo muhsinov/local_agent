@@ -4,7 +4,7 @@
 
 Primary specification: [TZ.md](TZ.md)
 
-## Phase 5 imkoniyatlari
+## Phase 7 imkoniyatlari
 
 - document upload, preview va delete
 - deterministic chunking
@@ -16,8 +16,11 @@ Primary specification: [TZ.md](TZ.md)
 - source citations
 - fallback behavior va strict mode
 - generation artifact lifecycle va startup recovery
+- explicit read-only local tools
+- approval-gated write actions: `rename_conversation`, `rebuild_vector_index`
+- exact-action human approval, one-time nonce va idempotent lifecycle
 
-`/chat` endi ixtiyoriy RAG context ishlatadi. Tool calling hali yo'q.
+`/chat` ixtiyoriy RAG context va tool calling ishlatadi. Write action approvalsiz bajarilmaydi.
 
 ## Dependency versiyalari
 
@@ -117,12 +120,20 @@ Bu faqat model avval cache qilingan bo'lsa ishlaydi.
 - `AGENT_MAX_TOOL_RESULT_CHARS`
 - `AGENT_MAX_SINGLE_TOOL_RESULT_CHARS`
 - `AGENT_REQUIRE_EXPLICIT_TOOL_INTENT`
+- `APPROVALS_ENABLED`
+- `APPROVAL_EXPIRY_SECONDS`
+- `APPROVAL_NONCE_BYTES`
+- `APPROVAL_MAX_PENDING`
+- `APPROVAL_EXECUTION_TIMEOUT_SECONDS`
 
 ## API
 
 - `GET /health`
 - `GET /model/status`
 - `POST /chat`
+- `GET /approvals/{id}`
+- `POST /approvals/{id}/approve`
+- `POST /approvals/{id}/reject`
 - `POST /documents/upload`
 - `GET /documents`
 - `GET /documents/{id}`
@@ -157,13 +168,17 @@ Bu faqat model avval cache qilingan bo'lsa ishlaydi.
 ## Read-only tools
 
 - `Use tools` yoqilganda agent faqat explicit read-only local tool allowlist'dan foydalanadi
-- mavjud tool'lar: documents list/metadata/excerpt/search, conversations list/messages, safe local system info
+- mavjud read-only tool'lar: documents list/metadata/excerpt/search, conversations list/messages, safe local system info
+- write tool'lar faqat approval bilan: `rename_conversation`, `rebuild_vector_index`
 - explicit intent kerak: umumiy savol tool loopni avtomatik boshlamaydi
-- shell, write access, web request, browser automation va secret/environment read yo'q
+- shell, delete, web request, browser automation, arbitrary filesystem write va secret/environment read yo'q
 - tool output untrusted data hisoblanadi
 - bounded loop: iteration, tool call va timeout limitlari bor
 - audit faqat safe metadata yozadi; raw arguments va raw results saqlanmaydi
-- known limitation: tool calling native OS execution emas, faqat lokal metadata va extracted text read-only access
+- approval lifecycle: `pending -> executing -> executed|failed` yoki `pending -> rejected|expired`
+- nonce faqat creation response'da qaytadi, localStorage/sessionStorage'da saqlanmaydi
+- exact action binding canonical argument hash bilan tekshiriladi
+- known limitation: write action bajarilib, keyingi final response generation yoki DB save yiqilishi mumkin; bunday approval `failed` bo'ladi
 
 ## Vector index lifecycle
 
@@ -182,10 +197,8 @@ Bu faqat model avval cache qilingan bo'lsa ishlaydi.
 
 ## Hozirgi cheklovlar
 
-- `/chat` RAG ishlatsa ham tool calling qilmaydi
 - background indexing yo'q
 - reranker yo'q
-- tool calling yo'q
 - advanced vector DB yo'q
 - scanned PDF uchun OCR yo'q
 

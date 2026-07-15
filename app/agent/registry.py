@@ -15,8 +15,10 @@ class ToolRegistry:
         definition: ToolDefinition = tool.definition
         if not TOOL_NAME_PATTERN.fullmatch(definition.name):
             raise AgentError(500, "TOOL_POLICY_DENIED", "Tool nomi noto'g'ri.")
-        if not definition.read_only:
-            raise AgentError(500, "TOOL_POLICY_DENIED", "Write tool ruxsat etilmagan.")
+        if definition.read_only and (definition.requires_approval or definition.write_effect):
+            raise AgentError(500, "TOOL_POLICY_DENIED", "Read-only tool policy flaglari noto'g'ri.")
+        if definition.write_effect and not definition.requires_approval:
+            raise AgentError(500, "TOOL_POLICY_DENIED", "Write tool approval talab qilishi kerak.")
         if definition.name in self._tools:
             raise AgentError(500, "TOOL_POLICY_DENIED", "Duplicate tool nomi ruxsat etilmagan.")
         self._tools[definition.name] = tool
@@ -32,8 +34,14 @@ class ToolRegistry:
 
 
 def build_default_registry(settings, coordinator) -> ToolRegistry:
-    from app.tools.conversation_tools import GetConversationMessagesTool, ListConversationsTool
-    from app.tools.document_tools import GetDocumentExcerptTool, GetDocumentMetadataTool, ListDocumentsTool, SearchDocumentsTool
+    from app.tools.conversation_tools import GetConversationMessagesTool, ListConversationsTool, RenameConversationTool
+    from app.tools.document_tools import (
+        GetDocumentExcerptTool,
+        GetDocumentMetadataTool,
+        ListDocumentsTool,
+        RebuildVectorIndexTool,
+        SearchDocumentsTool,
+    )
     from app.tools.system_info_tools import GetLocalSystemInfoTool
 
     registry = ToolRegistry()
@@ -45,4 +53,8 @@ def build_default_registry(settings, coordinator) -> ToolRegistry:
     registry.register(ListConversationsTool(timeout))
     registry.register(GetConversationMessagesTool(timeout))
     registry.register(GetLocalSystemInfoTool(timeout))
+    if settings.approval_allow_rename_conversation:
+        registry.register(RenameConversationTool(timeout))
+    if settings.approval_allow_rebuild_vector_index:
+        registry.register(RebuildVectorIndexTool(timeout))
     return registry

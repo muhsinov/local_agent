@@ -1,5 +1,6 @@
 from pydantic import BaseModel, Field, field_validator
 
+from app.schemas.approval import ApprovalPendingResponse
 from app.schemas.rag import RagMetadataResponse, RagSourceResponse
 
 
@@ -43,11 +44,12 @@ class UsageSummary(BaseModel):
 class ChatResponse(BaseModel):
     """Outgoing chat response payload."""
 
-    conversation_id: int
+    conversation_id: int | None
     answer: str
     model: str
     sources: list[RagSourceResponse] = Field(default_factory=list)
     tool_calls: list[dict] = Field(default_factory=list)
+    approval: ApprovalPendingResponse | None = None
     execution_time_ms: int
     usage: UsageSummary
     rag: RagMetadataResponse

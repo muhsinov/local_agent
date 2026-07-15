@@ -5,7 +5,7 @@ from pathlib import Path
 from app.config import Settings, get_settings
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 EXPECTED_TABLES = (
     "conversations",
     "messages",
@@ -13,6 +13,7 @@ EXPECTED_TABLES = (
     "audit_logs",
     "document_chunks",
     "vector_index_state",
+    "approval_requests",
     "schema_version",
 )
 CONVERSATION_COLUMNS = {"id", "created_at", "title", "updated_at"}
@@ -55,6 +56,26 @@ VECTOR_INDEX_STATE_COLUMNS = {
     "document_count",
     "dirty",
     "updated_at",
+}
+APPROVAL_REQUEST_COLUMNS = {
+    "id",
+    "conversation_id",
+    "tool_call_id",
+    "tool_name",
+    "arguments_json",
+    "arguments_sha256",
+    "nonce_sha256",
+    "original_user_message",
+    "use_rag",
+    "document_ids_json",
+    "status",
+    "safe_summary",
+    "created_at",
+    "expires_at",
+    "executing_at",
+    "completed_at",
+    "error_code",
+    "execution_result_json",
 }
 
 
@@ -192,6 +213,46 @@ def ensure_vector_index_state_row(connection: sqlite3.Connection) -> None:
         )
 
 
+def create_approval_request_tables(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS approval_requests (
+            id TEXT PRIMARY KEY,
+            conversation_id INTEGER NULL,
+            tool_call_id TEXT NOT NULL,
+            tool_name TEXT NOT NULL,
+            arguments_json TEXT NOT NULL,
+            arguments_sha256 TEXT NOT NULL,
+            nonce_sha256 TEXT NOT NULL,
+            original_user_message TEXT NOT NULL,
+            use_rag INTEGER NOT NULL DEFAULT 0 CHECK(use_rag IN (0, 1)),
+            document_ids_json TEXT NULL,
+            status TEXT NOT NULL CHECK(status IN ('pending', 'executing', 'executed', 'rejected', 'expired', 'failed')),
+            safe_summary TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            expires_at TEXT NOT NULL,
+            executing_at TEXT NULL,
+            completed_at TEXT NULL,
+            error_code TEXT NULL,
+            execution_result_json TEXT NULL,
+            FOREIGN KEY(conversation_id) REFERENCES conversations(id)
+        );
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_approval_requests_status
+        ON approval_requests(status);
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_approval_requests_expires_at
+        ON approval_requests(expires_at);
+        """
+    )
+
+
 def create_tables(connection: sqlite3.Connection) -> None:
     connection.execute(
         """
@@ -251,6 +312,7 @@ def create_tables(connection: sqlite3.Connection) -> None:
     create_document_indexes(connection)
     create_document_chunk_tables(connection)
     ensure_vector_index_state_row(connection)
+    create_approval_request_tables(connection)
     create_schema_version_table(connection)
 
 
@@ -296,6 +358,18 @@ def document_chunks_foreign_key_valid(connection: sqlite3.Connection) -> bool:
             and str(row["from"]) == "document_id"
             and str(row["to"]) == "id"
             and str(row["on_delete"]).upper() == "CASCADE"
+        ):
+            return True
+    return False
+
+
+def approval_requests_foreign_key_valid(connection: sqlite3.Connection) -> bool:
+    rows = connection.execute("PRAGMA foreign_key_list(approval_requests);").fetchall()
+    for row in rows:
+        if (
+            str(row["table"]) == "conversations"
+            and str(row["from"]) == "conversation_id"
+            and str(row["to"]) == "id"
         ):
             return True
     return False
@@ -397,6 +471,7 @@ def migrate_schema(connection: sqlite3.Connection) -> None:
     migrate_documents_table_to_v2(connection)
     create_document_chunk_tables(connection)
     ensure_vector_index_state_row(connection)
+    create_approval_request_tables(connection)
     create_schema_version_table(connection)
     set_schema_version(connection, SCHEMA_VERSION)
 
@@ -445,9 +520,13 @@ def check_database(settings: Settings | None = None) -> bool:
                 return False
             if not VECTOR_INDEX_STATE_COLUMNS.issubset(get_table_columns(connection, "vector_index_state")):
                 return False
+            if not APPROVAL_REQUEST_COLUMNS.issubset(get_table_columns(connection, "approval_requests")):
+                return False
             if not messages_foreign_key_valid(connection):
                 return False
             if not document_chunks_foreign_key_valid(connection):
+                return False
+            if not approval_requests_foreign_key_valid(connection):
                 return False
             if not index_exists(connection, "documents", "idx_documents_sha256"):
                 return False
@@ -456,6 +535,10 @@ def check_database(settings: Settings | None = None) -> bool:
             if not index_exists(connection, "document_chunks", "idx_document_chunks_document"):
                 return False
             if not index_exists(connection, "document_chunks", "idx_document_chunks_sha256"):
+                return False
+            if not index_exists(connection, "approval_requests", "idx_approval_requests_status"):
+                return False
+            if not index_exists(connection, "approval_requests", "idx_approval_requests_expires_at"):
                 return False
             state_row = connection.execute("SELECT COUNT(*) FROM vector_index_state WHERE id = 1;").fetchone()
             if not state_row or int(state_row[0]) != 1:

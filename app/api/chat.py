@@ -10,6 +10,8 @@ from app.agent.policy import ToolPolicy
 from app.agent.prompt import TOOL_AGENT_SYSTEM_PROMPT, render_tool_definitions
 from app.agent.registry import build_default_registry
 from app.agent.executor import ToolExecutor
+from app.approval.errors import ApprovalError
+from app.approval.service import ApprovalService
 from app.api.errors import ApiError
 from app.llm.ollama_client import SYSTEM_PROMPT
 from app.llm.exceptions import (
@@ -137,6 +139,60 @@ async def chat(request: Request, payload: ChatRequest) -> ChatResponse:
             normalized_answer = agent_result.answer
             result_prompt_tokens = agent_result.prompt_tokens
             result_completion_tokens = agent_result.completion_tokens
+            if agent_result.approval_required is not None:
+                approval_service = ApprovalService(settings)
+                try:
+                    approval, nonce = approval_service.create_pending(
+                        approval_required=agent_result.approval_required,
+                        conversation_id=payload.conversation_id,
+                        original_user_message=payload.message,
+                        use_rag=rag_enabled,
+                        document_ids=payload.document_ids,
+                    )
+                except ApprovalError as exc:
+                    raise ApiError(exc.status_code, exc.code, exc.message) from exc
+                return ChatResponse(
+                    conversation_id=payload.conversation_id,
+                    answer="Approval required.",
+                    model=settings.ollama_model,
+                    sources=[],
+                    tool_calls=[
+                        {
+                            "id": item.id,
+                            "name": item.name,
+                            "ok": item.ok,
+                            "execution_time_ms": item.execution_time_ms,
+                            "iteration": item.iteration,
+                            "error_code": item.error_code,
+                            "safe_summary": item.safe_summary,
+                            "requires_approval": item.requires_approval,
+                        }
+                        for item in agent_result.tool_calls
+                    ],
+                    approval={
+                        "required": True,
+                        "approval_id": approval.id,
+                        "nonce": nonce,
+                        "tool_name": approval.tool_name,
+                        "safe_summary": approval.safe_summary,
+                        "expires_at": approval.expires_at,
+                    },
+                    execution_time_ms=int((perf_counter() - started_at) * 1000),
+                    usage=UsageSummary(
+                        prompt_tokens=result_prompt_tokens,
+                        completion_tokens=result_completion_tokens,
+                    ),
+                    rag=RagMetadataResponse(
+                        enabled=rag_enabled,
+                        used=False,
+                        fallback=rag_result.fallback,
+                        generation_id=None,
+                        retrieved_count=0,
+                        context_chars=0,
+                        citations_present=False,
+                        invalid_citations_removed=0,
+                    ),
+                )
             if not agent_result.rag_context_included:
                 returned_sources = []
                 rag_generation_id = None
@@ -150,6 +206,8 @@ async def chat(request: Request, payload: ChatRequest) -> ChatResponse:
                     "execution_time_ms": item.execution_time_ms,
                     "iteration": item.iteration,
                     "error_code": item.error_code,
+                    "safe_summary": item.safe_summary,
+                    "requires_approval": item.requires_approval,
                 }
                 for item in agent_result.tool_calls
             ]

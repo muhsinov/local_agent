@@ -4,7 +4,7 @@ import time
 from app.agent.errors import AgentError
 from app.agent.executor import ToolExecutor
 from app.agent.helpers import remaining_seconds, safe_truncate
-from app.agent.models import AgentLoopResult, ToolCallSummary, ToolResult
+from app.agent.models import AgentLoopResult, ApprovalRequired, ToolCallSummary, ToolResult
 from app.agent.parser import parse_agent_response
 from app.agent.prompt import TOOL_AGENT_SYSTEM_PROMPT, build_agent_messages, render_tool_definitions
 
@@ -72,6 +72,7 @@ class AgentLoop:
                 raise AgentError(422, "AGENT_ITERATION_LIMIT", "Agent iteration limiti tugadi.")
             if call_count + len(payload) > self._settings.agent_max_tool_calls:
                 raise AgentError(422, "AGENT_TOOL_CALL_LIMIT", "Tool call limiti tugadi.")
+            validated_calls: list[tuple[object, object]] = []
             for call in payload:
                 tool = self._policy.validate_call(
                     call=call,
@@ -79,6 +80,41 @@ class AgentLoop:
                     call_count=call_count,
                     deadline=deadline,
                 )
+                validated_calls.append((call, tool))
+            write_calls = [(call, tool) for call, tool in validated_calls if tool.definition.requires_approval]
+            if write_calls:
+                if len(write_calls) > 1 or len(validated_calls) > 1:
+                    raise AgentError(
+                        422,
+                        "MULTIPLE_APPROVAL_ACTIONS_NOT_ALLOWED",
+                        "Bir javobda faqat bitta approval talab qiluvchi action bo'lishi mumkin.",
+                    )
+                call, tool = write_calls[0]
+                try:
+                    validated = tool.input_model.model_validate(call.arguments)
+                except Exception as exc:
+                    raise AgentError(422, "TOOL_ARGUMENTS_INVALID", "Tool argumentlari noto'g'ri.") from exc
+                safe_summary = tool.build_safe_summary(validated)
+                return AgentLoopResult(
+                    answer="",
+                    tool_calls=[
+                        ToolCallSummary(
+                            id=call.id,
+                            name=call.name,
+                            ok=False,
+                            execution_time_ms=0,
+                            iteration=iteration,
+                            safe_summary=safe_summary,
+                            requires_approval=True,
+                        )
+                    ],
+                    approval_required=ApprovalRequired(tool_call=call, safe_summary=safe_summary),
+                    iterations=iteration,
+                    prompt_tokens=prompt_tokens_total,
+                    completion_tokens=completion_tokens_total,
+                    rag_context_included=final_context_included,
+                )
+            for call, tool in validated_calls:
                 tool_result = await self._executor.execute(tool=tool, call=call, iteration=iteration, deadline=deadline)
                 remaining = self._settings.agent_max_tool_result_chars - sum(len(item.content) for item in tool_results)
                 if remaining < len(tool_result.content):
