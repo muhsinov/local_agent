@@ -55,7 +55,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.settings = active_settings
-        app.state.runtime_lifecycle.startup_ready = False
+        await app.state.runtime_lifecycle.start()
         created_client = False
         try:
             if not hasattr(app.state, "ollama_client") or app.state.ollama_client is None:
@@ -83,27 +83,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         finally:
             loop = asyncio.get_running_loop()
             shutdown_deadline = loop.time() + active_settings.runtime_drain_timeout_seconds
-            timeout_reported = False
 
             def remaining() -> float:
                 return max(0.0, shutdown_deadline - loop.time())
 
-            async def wait_component(component, name: str) -> None:
+            timeout_components = {"http", "approval", "tool", "vector", "ollama", "logger"}
+            timeout_reported = False
+
+            def report_drain_timeout(component: str) -> None:
                 nonlocal timeout_reported
+                if timeout_reported or component not in timeout_components:
+                    return
+                timeout_reported = True
+                app.state.safe_logger.log(event="runtime_drain_timeout", request_id="", status_code=503, draining=True, component=component)
+                write_audit_log(active_settings, action="runtime_drain_timeout", status="timeout", arguments={"status_code": 503, "draining": True, "component": component})
+
+            async def wait_component(component, name: str) -> None:
                 if component is None:
                     return
                 await component.shutdown(timeout_seconds=remaining())
                 if remaining() <= 0 and not timeout_reported:
-                    timeout_reported = True
-                    app.state.safe_logger.log(event="runtime_drain_timeout", request_id="", status_code=503, draining=True, component=name)
-                    write_audit_log(active_settings, action="runtime_drain_timeout", status="timeout", arguments={"status_code": 503, "draining": True, "component": name})
+                    report_drain_timeout(name)
 
             await app.state.runtime_lifecycle.begin_drain()
             drained = await app.state.runtime_lifecycle.wait_for_active(remaining())
             if not drained and not timeout_reported:
-                timeout_reported = True
-                app.state.safe_logger.log(event="runtime_drain_timeout", request_id="", status_code=503, draining=True, component="http")
-                write_audit_log(active_settings, action="runtime_drain_timeout", status="timeout", arguments={"status_code": 503, "draining": True, "component": "http"})
+                report_drain_timeout("http")
             approval = getattr(app.state, "approval_operation_coordinator", None)
             if approval is not None:
                 approval.begin_drain()
@@ -120,9 +125,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 try:
                     await asyncio.wait_for(app.state.ollama_client.close(), timeout=remaining())
                 except (TimeoutError, asyncio.CancelledError):
-                    if not timeout_reported:
-                        timeout_reported = True
-                        app.state.safe_logger.log(event="runtime_drain_timeout", request_id="", status_code=503, draining=True, component="ollama")
+                    report_drain_timeout("ollama")
             app.state.safe_logger.close()
 
     app = FastAPI(title=active_settings.app_name, version=active_settings.app_version, lifespan=lifespan)

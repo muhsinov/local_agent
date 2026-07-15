@@ -13,12 +13,23 @@ class VectorOperationCoordinator:
         self._lock = asyncio.Lock()
         self._active_operation: asyncio.Task[Any] | None = None
         self.accepting_operations = True
+        self.draining = False
+        self.closed = False
 
     def begin_drain(self) -> None:
+        if self.closed:
+            return
         self.accepting_operations = False
+        self.draining = True
 
     def start(self) -> None:
         self.accepting_operations = True
+        self.draining = False
+        self.closed = False
+
+    @property
+    def state(self) -> str:
+        return "closed" if self.closed else "draining" if self.draining else "accepting"
 
     async def run(
         self,
@@ -33,6 +44,10 @@ class VectorOperationCoordinator:
             await asyncio.wait_for(self._lock.acquire(), timeout=acquire_timeout_seconds)
         except TimeoutError as exc:
             raise TimeoutError from exc
+
+        if not self.accepting_operations:
+            self._lock.release()
+            raise RuntimeError("VECTOR_COORDINATOR_DRAINING")
 
         async def operation_wrapper() -> T:
             try:
@@ -66,10 +81,12 @@ class VectorOperationCoordinator:
     async def shutdown(self, timeout_seconds: float = 1.0) -> None:
         active = self._active_operation
         if active is None:
+            self.closed = True
             return
         try:
             await asyncio.wait_for(asyncio.shield(active), timeout=timeout_seconds)
         except TimeoutError:
-            return
+            pass
         except BaseException:
-            return
+            pass
+        self.closed = True

@@ -10,12 +10,23 @@ class ApprovalOperationCoordinator:
         self._lock = asyncio.Lock()
         self._active: dict[str, asyncio.Task[Any]] = {}
         self.accepting_operations = True
+        self.draining = False
+        self.closed = False
 
     def begin_drain(self) -> None:
+        if self.closed:
+            return
         self.accepting_operations = False
+        self.draining = True
 
     def start(self) -> None:
         self.accepting_operations = True
+        self.draining = False
+        self.closed = False
+
+    @property
+    def state(self) -> str:
+        return "closed" if self.closed else "draining" if self.draining else "accepting"
 
     async def start_or_join(
         self,
@@ -53,6 +64,7 @@ class ApprovalOperationCoordinator:
     async def shutdown(self, timeout_seconds: float = 1.0) -> None:
         tasks = [task for task in self._active.values() if not task.done()]
         if not tasks:
+            self.closed = True
             return
         try:
             await asyncio.wait_for(
@@ -60,4 +72,5 @@ class ApprovalOperationCoordinator:
                 timeout=timeout_seconds,
             )
         except TimeoutError:
-            return
+            pass
+        self.closed = True

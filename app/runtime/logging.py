@@ -5,7 +5,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 
 
-SAFE_FIELDS = {"timestamp", "level", "event", "request_id", "method", "route_template", "status_code", "duration_ms", "error_code", "rate_limit_group", "browser", "authenticated", "limit", "retry_after_seconds", "draining"}
+SAFE_FIELDS = {"timestamp", "level", "event", "request_id", "method", "route_template", "status_code", "duration_ms", "error_code", "rate_limit_group", "browser", "authenticated", "limit", "retry_after_seconds", "draining", "component"}
 
 
 class SafeJsonlLogger:

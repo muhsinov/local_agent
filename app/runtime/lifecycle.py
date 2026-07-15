@@ -18,6 +18,15 @@ class RuntimeLifecycle:
             self._active += 1
             return True
 
+    async def start(self) -> None:
+        async with self._condition:
+            if self._active != 0:
+                raise RuntimeError("RUNTIME_ACTIVE_DURING_START")
+            self.accepting_requests = True
+            self.draining = False
+            self.startup_ready = False
+            self.started_at = datetime.now(timezone.utc)
+
     async def exit(self) -> None:
         async with self._condition:
             self._active = max(0, self._active - 1)

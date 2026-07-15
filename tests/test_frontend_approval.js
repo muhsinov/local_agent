@@ -4,8 +4,13 @@ const path = require("node:path");
 const test = require("node:test");
 const vm = require("node:vm");
 
-function makeResponse(payload, status = 200) {
-  return { ok: status >= 200 && status < 300, status, json: async () => payload };
+function makeResponse(payload, status = 200, headers = {}) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => payload,
+    headers: { get(name) { return headers[name] ?? headers[name.toLowerCase()] ?? null; } },
+  };
 }
 
 function makeHarness(fetchImpl, hash = "") {
@@ -51,9 +56,9 @@ function makeHarness(fetchImpl, hash = "") {
     clearInterval(id) {
       timers.delete(id);
     },
-    setTimeout(callback) {
+    setTimeout(callback, delay) {
       const id = nextTimer++;
-      timers.set(id, callback);
+      timers.set(id, { callback, delay });
       return id;
     },
     clearTimeout(id) {
@@ -162,4 +167,17 @@ test("terminal status clears nonce and refresh never calls result", async () => 
   await refresh.context.restoreApprovalStatusFromUrl();
   assert.equal(refresh.calls.some((url) => String(url).includes("/result")), false);
   assert.match(refresh.elements.get("approval-meta").textContent, /Action completed/);
+});
+
+test("Retry-After parsing is bounded and one-shot scheduling captures delay", () => {
+  const harness = makeHarness(async () => makeResponse({ status: "executing" }));
+  const context = harness.context;
+  assert.equal(context.retryAfterMilliseconds(makeResponse({}, 429, { "Retry-After": "7" })), 7000);
+  assert.equal(context.retryAfterMilliseconds(makeResponse({}, 429, { "Retry-After": "999" })), 60000);
+  assert.equal(context.retryAfterMilliseconds(makeResponse({}, 429, { "Retry-After": "bad" })), 1000);
+  assert.equal(context.retryAfterMilliseconds(makeResponse({}, 429, { "Retry-After": "Wed, 21 Oct 2015 07:28:00 GMT" })), 1000);
+  context.renderApprovalCard(approval());
+  context.scheduleApprovalPoll(7000);
+  const timer = [...harness.timers.values()].find((value) => value.delay === 7000);
+  assert.ok(timer);
 });

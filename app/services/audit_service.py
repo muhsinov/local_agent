@@ -68,6 +68,7 @@ def write_audit_log(
             "limit",
             "retry_after_seconds",
             "draining",
+            "component",
         }
     }
     try:
