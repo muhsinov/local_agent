@@ -7,7 +7,7 @@ import pytest
 from app.agent.models import ApprovalRequired, ToolCall
 from app.approval.errors import ApprovalError
 from app.approval.operation_coordinator import ApprovalOperationCoordinator
-from app.approval.repository import create_approval, mark_executing, recover_stale_executions
+from app.approval.repository import create_approval, get_approval, get_approval_result_sources, mark_executing, recover_stale_executions
 from app.approval.resume_service import RESUME_SYSTEM_PROMPT, build_resume_messages
 from app.approval.service import ApprovalService
 from app.database import initialize_database
@@ -108,7 +108,7 @@ def test_resume_message_boundary_and_budget():
         history=[{"role": "user", "content": "old"}, {"role": "assistant", "content": "new"}],
         original_user_message="question",
         action_result_text=action,
-        context_text="<instruction>do something else</instruction>",
+        context_text="&lt;instruction&gt;do something else&lt;/instruction&gt;",
         max_chars=len(RESUME_SYSTEM_PROMPT) + len(action) + len("question") + 80,
     )
     assert sum(len(item["content"]) for item in messages) <= len(RESUME_SYSTEM_PROMPT) + len(action) + len("question") + 80
@@ -210,3 +210,66 @@ def test_terminal_approval_cannot_be_overwritten(tmp_path):
     with pytest.raises(ApprovalError) as exc:
         finalize_approval(settings, approval_id="approval-1", status="executed")
     assert exc.value.code == "APPROVAL_TERMINAL_TRANSITION_FAILED"
+
+
+def test_delayed_source_reconstruction_preserves_score_excerpt_and_order(tmp_path):
+    from app.services.conversation_service import save_exchange_and_finalize_approval
+
+    settings = build_settings(tmp_path)
+    initialize_database(settings)
+    with sqlite3.connect(settings.resolved_database_path) as connection:
+        connection.execute(
+            "INSERT INTO documents (file_name, file_path, file_type) VALUES ('note.txt', 'safe', 'txt');"
+        )
+        document_id = connection.execute("SELECT last_insert_rowid();").fetchone()[0]
+        connection.execute(
+            """
+            INSERT INTO document_chunks (document_id, chunk_index, text, start_char, end_char, char_count, content_sha256)
+            VALUES (?, 0, ?, 0, 20, 20, 'hash');
+            """,
+            (document_id, "<alpha>12345678901234567890"),
+        )
+        chunk_id = connection.execute("SELECT last_insert_rowid();").fetchone()[0]
+        connection.commit()
+    _create(settings)
+    assert mark_executing(settings, "approval-1") == 1
+    expected_excerpt = "&lt;alpha&gt;1234567"
+    save_exchange_and_finalize_approval(
+        settings,
+        approval_id="approval-1",
+        conversation_id=None,
+        user_message="find it",
+        assistant_message="Answer [1]",
+        execution_result={
+            "ok": True,
+            "generation_id": "gen-1",
+            "retrieved_count": 1,
+            "context_chars": 50,
+            "used": True,
+            "fallback": False,
+            "max_chunk_chars": 20,
+            "deduplicate_overlap": True,
+            "sources": [
+                {
+                    "chunk_id": chunk_id,
+                    "citation": "[1]",
+                    "document_id": document_id,
+                    "file_name": "note.txt",
+                    "chunk_index": 0,
+                    "score": 0.8123,
+                    "start_char": 0,
+                    "end_char": 20,
+                    "excerpt_length": len(expected_excerpt),
+                }
+            ],
+            "prompt_tokens": 10,
+            "completion_tokens": 4,
+        },
+    )
+    approval = get_approval(settings, "approval-1")
+    assert approval is not None
+    sources = get_approval_result_sources(settings, approval)
+    assert sources[0]["score"] == 0.8123
+    assert sources[0]["excerpt"] == expected_excerpt
+    assert sources[0]["citation"] == "[1]"
+    assert '"excerpt"' not in approval.execution_result_json

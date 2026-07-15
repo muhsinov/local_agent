@@ -122,6 +122,26 @@ class ApprovalExecutor:
                 execution_result={
                     "ok": True,
                     "generation_id": rag_result.context.generation_id if rag_result.context else None,
+                    "retrieved_count": rag_result.context.retrieved_count if rag_result.context else 0,
+                    "context_chars": rag_result.context.context_chars if rag_result.context else 0,
+                    "used": bool(rag_result.context and rag_result.context.sources),
+                    "fallback": rag_result.fallback,
+                    "deduplicate_overlap": self._settings.rag_context_overlap_dedup,
+                    "max_chunk_chars": self._settings.rag_max_chunk_chars,
+                    "sources": [
+                        {
+                            "chunk_id": source.chunk_id,
+                            "citation": source.citation,
+                            "document_id": source.document_id,
+                            "file_name": source.file_name,
+                            "chunk_index": source.chunk_index,
+                            "score": source.score,
+                            "start_char": source.start_char,
+                            "end_char": source.end_char,
+                            "excerpt_length": len(source.excerpt),
+                        }
+                        for source in (rag_result.context.sources if rag_result.context else [])
+                    ],
                     "source_chunk_ids": [source.chunk_id for source in rag_result.context.sources] if rag_result.context else [],
                     "citation_order": [source.chunk_id for source in rag_result.context.sources] if rag_result.context else [],
                     "prompt_tokens": usage.prompt_tokens,

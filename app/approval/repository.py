@@ -195,11 +195,26 @@ def get_approval_result_message(settings, approval: ApprovalRecord) -> str | Non
 
 
 def get_approval_result_sources(settings, approval: ApprovalRecord) -> list[dict]:
+    from app.rag.context_builder import _deduplicate_excerpt, _escape_block
+
+    def safe_int(value, default=0):
+        return value if isinstance(value, int) and not isinstance(value, bool) else default
+
+    def safe_float(value, default=0.0):
+        return value if isinstance(value, (int, float)) and not isinstance(value, bool) else default
+
     try:
         metadata = json.loads(approval.execution_result_json or "{}")
     except json.JSONDecodeError:
         return []
-    chunk_ids = [int(value) for value in metadata.get("source_chunk_ids", []) if isinstance(value, int)]
+    source_metadata = metadata.get("sources")
+    if not isinstance(source_metadata, list):
+        source_metadata = [
+            {"chunk_id": int(value), "citation": f"[{index}]", "score": 0.0, "excerpt_length": 0}
+            for index, value in enumerate(metadata.get("source_chunk_ids", []), start=1)
+            if isinstance(value, int)
+        ]
+    chunk_ids = [int(item["chunk_id"]) for item in source_metadata if isinstance(item, dict) and isinstance(item.get("chunk_id"), int)]
     if not chunk_ids:
         return []
     placeholders = ",".join("?" for _ in chunk_ids)
@@ -216,23 +231,56 @@ def get_approval_result_sources(settings, approval: ApprovalRecord) -> list[dict
         ).fetchall()
     by_id = {int(row["chunk_id"]): row for row in rows}
     sources = []
-    for index, chunk_id in enumerate(chunk_ids, start=1):
+    previous_document_id = None
+    previous_chunk_index = None
+    previous_excerpt = ""
+    max_chunk_chars = safe_int(metadata.get("max_chunk_chars"), settings.rag_max_chunk_chars)
+    if max_chunk_chars < 0:
+        max_chunk_chars = settings.rag_max_chunk_chars
+    deduplicate_overlap = bool(metadata.get("deduplicate_overlap", settings.rag_context_overlap_dedup))
+    for index, item in enumerate(source_metadata, start=1):
+        if not isinstance(item, dict) or not isinstance(item.get("chunk_id"), int):
+            continue
+        chunk_id = int(item["chunk_id"])
         row = by_id.get(chunk_id)
         if row is None:
+            sources.append(
+                {
+                    "citation": str(item.get("citation", f"[{index}]")),
+                    "chunk_id": chunk_id,
+                    "document_id": safe_int(item.get("document_id")),
+                    "file_name": str(item.get("file_name", "Unavailable source")),
+                    "chunk_index": safe_int(item.get("chunk_index")),
+                    "score": safe_float(item.get("score")),
+                    "start_char": safe_int(item.get("start_char")),
+                    "end_char": safe_int(item.get("end_char")),
+                    "excerpt": "Source unavailable.",
+                }
+            )
             continue
+        excerpt = _escape_block(str(row["text"]))[:max_chunk_chars].strip()
+        document_id = int(row["document_id"])
+        chunk_index = int(row["chunk_index"])
+        if deduplicate_overlap and previous_excerpt and previous_document_id == document_id and previous_chunk_index is not None and abs(previous_chunk_index - chunk_index) <= 1:
+            excerpt = _deduplicate_excerpt(previous_excerpt, excerpt)
+        excerpt_length = safe_int(item.get("excerpt_length"), len(excerpt))
+        excerpt = excerpt[:max(0, excerpt_length)].strip()
         sources.append(
             {
-                "citation": f"[{index}]",
+                "citation": str(item.get("citation", f"[{index}]")),
                 "chunk_id": int(row["chunk_id"]),
-                "document_id": int(row["document_id"]),
+                "document_id": document_id,
                 "file_name": str(row["file_name"]),
-                "chunk_index": int(row["chunk_index"]),
-                "score": 0.0,
+                "chunk_index": chunk_index,
+                "score": safe_float(item.get("score")),
                 "start_char": int(row["start_char"]),
                 "end_char": int(row["end_char"]),
-                "excerpt": str(row["text"]),
+                "excerpt": excerpt,
             }
         )
+        previous_document_id = document_id
+        previous_chunk_index = chunk_index
+        previous_excerpt = excerpt
     return sources
 
 

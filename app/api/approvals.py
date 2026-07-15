@@ -37,10 +37,15 @@ def _public_status(record) -> ApprovalStatusResponse:
     )
 
 
+def _safe_int(value):
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
 def _result_response(settings, result) -> ApprovalResultResponse:
     approval = result["approval"]
     rag_result = result.get("rag_result")
     usage = result.get("usage")
+    metadata = {}
     if rag_result is not None:
         context = rag_result.context
         sources = [RagSourceResponse(**source.__dict__) for source in context.sources] if context else []
@@ -63,13 +68,13 @@ def _result_response(settings, result) -> ApprovalResultResponse:
             metadata = {}
         rag = RagMetadataResponse(
             enabled=approval.use_rag,
-            used=bool(sources),
-            fallback=approval.use_rag and not sources,
+            used=bool(metadata.get("used", sources)),
+            fallback=bool(metadata.get("fallback", approval.use_rag and not sources)),
             generation_id=metadata.get("generation_id"),
-            retrieved_count=len(sources),
-            context_chars=0,
+            retrieved_count=_safe_int(metadata.get("retrieved_count")) or len(sources),
+            context_chars=_safe_int(metadata.get("context_chars")) or 0,
             citations_present=bool(metadata.get("citations_present", False)),
-            invalid_citations_removed=int(metadata.get("invalid_citations_removed", 0)),
+            invalid_citations_removed=_safe_int(metadata.get("invalid_citations_removed")) or 0,
         )
     return ApprovalResultResponse(
         approval_id=approval.id,
@@ -79,8 +84,8 @@ def _result_response(settings, result) -> ApprovalResultResponse:
         sources=sources,
         rag=rag,
         usage={
-            "prompt_tokens": usage.prompt_tokens if usage else None,
-            "completion_tokens": usage.completion_tokens if usage else None,
+            "prompt_tokens": usage.prompt_tokens if usage else _safe_int(metadata.get("prompt_tokens")),
+            "completion_tokens": usage.completion_tokens if usage else _safe_int(metadata.get("completion_tokens")),
         },
         error_code=approval.error_code,
     )

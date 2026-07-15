@@ -74,8 +74,12 @@ def test_approve_rename_executes_once_and_saves_final_exchange(tmp_path) -> None
         approval = chat_response.json()["approval"]
         approve_response = http.post(f"/approvals/{approval['approval_id']}/approve", json={"nonce": approval["nonce"]})
         repeated = http.post(f"/approvals/{approval['approval_id']}/approve", json={"nonce": approval["nonce"]})
+        result = http.post(f"/approvals/{approval['approval_id']}/result", json={"nonce": approval["nonce"]})
 
     assert approve_response.status_code == 200
+    assert approve_response.json()["usage"] == {"prompt_tokens": 1, "completion_tokens": 1}
+    assert result.status_code == 200
+    assert result.json()["usage"] == {"prompt_tokens": 1, "completion_tokens": 1}
     assert approve_response.json()["status"] == "executed"
     assert repeated.status_code == 409
     assert repeated.json()["detail"]["code"] == "APPROVAL_ALREADY_USED"
@@ -163,11 +167,14 @@ def test_result_endpoint_returns_exact_persisted_assistant_message(tmp_path) -> 
         ).json()["approval"]
         approve = http.post(f"/approvals/{approval['approval_id']}/approve", json={"nonce": approval["nonce"]})
         result = http.post(f"/approvals/{approval['approval_id']}/result", json={"nonce": approval["nonce"]})
+        repeated_result = http.post(f"/approvals/{approval['approval_id']}/result", json={"nonce": approval["nonce"]})
 
     assert approve.status_code == 200
     assert result.status_code == 200
     assert result.json()["answer"] == "Final."
     assert result.json()["conversation_id"] == conversation_id
+    assert repeated_result.status_code == 200
+    assert repeated_result.json() == result.json()
     with sqlite3.connect(settings.resolved_database_path) as connection:
         row = connection.execute(
             "SELECT conversation_id, result_message_id, status FROM approval_requests WHERE id = ?;",
@@ -177,6 +184,8 @@ def test_result_endpoint_returns_exact_persisted_assistant_message(tmp_path) -> 
     assert row[0] == conversation_id
     assert row[2] == "executed"
     assert message == ("assistant", "Final.")
+    with sqlite3.connect(settings.resolved_database_path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM messages WHERE role='assistant';").fetchone()[0] == 2
 
 
 def test_result_endpoint_rejects_wrong_nonce(tmp_path) -> None:

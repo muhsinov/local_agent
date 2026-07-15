@@ -13,6 +13,8 @@
 - Recovery: process restart'dan keyin deadline o'tgan active-less `executing` approval `failed/APPROVAL_EXECUTION_INTERRUPTED` bo'ladi; write action avtomatik qayta bajarilmaydi.
 - Rebuild timeout: caller kutish limiti tugasa approval `202/executing`; vector operation real tugamaguncha background lifecycle davom etadi.
 - Result delivery: `POST /approvals/{id}/result` nonce va local-origin tekshiruvdan keyin exact persisted assistant message'ni qaytaradi; action qayta bajarilmaydi.
+- Immediate va delayed result bir xil response renderer/schema'dan foydalanadi; delayed usage va RAG metadata safe execution reference'dan tiklanadi.
+- Delayed source reconstruction chunk text'dan aynan escaped/truncated/deduplicated prompt excerpt'ni, citation order va score bilan qayta quradi; raw excerpt DB'ga yozilmaydi.
 - Idempotency: `executed`, `rejected`, `failed`, `expired` holatlar qayta approve/reject qilinmaydi.
 - Rejection va cancellation: reject write actionni bajarmaydi; cancelled chat/approve partial exchange yozmaydi.
 - Resumable flow: approve'dan keyin write action bajariladi, so'ng final-only resume prompt bilan bitta final javob olinadi.

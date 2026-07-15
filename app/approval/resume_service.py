@@ -42,7 +42,8 @@ def render_approved_action_result(*, approval_id: str, tool_name: str, content: 
 
 
 def _fit_context(context_text: str, max_chars: int) -> str:
-    escaped = escape(context_text)
+    # RagService already returns an XML-safe documents block payload.
+    escaped = context_text
     if len(DOCUMENTS_PREFIX) + len(escaped) + len(DOCUMENTS_SUFFIX) <= max_chars:
         return f"{DOCUMENTS_PREFIX}{escaped}{DOCUMENTS_SUFFIX}"
     if len(DOCUMENTS_PREFIX) + len(DOCUMENTS_SUFFIX) > max_chars:
@@ -50,7 +51,7 @@ def _fit_context(context_text: str, max_chars: int) -> str:
     low, high, best = 0, len(context_text), ""
     while low <= high:
         mid = (low + high) // 2
-        candidate = escape(context_text[:mid])
+        candidate = context_text[:mid]
         if len(DOCUMENTS_PREFIX) + len(candidate) + len(DOCUMENTS_SUFFIX) <= max_chars:
             best = candidate
             low = mid + 1

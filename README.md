@@ -182,6 +182,9 @@ Bu faqat model avval cache qilingan bo'lsa ishlaydi.
 - stale `executing` approval startup/request-time recovery'da `APPROVAL_EXECUTION_INTERRUPTED` bilan failed qilinadi
 - rebuild caller timeout'da `202/executing` qaytarishi mumkin; real operation tugamaguncha approval failed qilinmaydi
 - `POST /approvals/{id}/result` exact persisted assistant message'ni qaytaradi va write actionni qayta bajarmaydi
+- Immediate/delayed approval result frontend'da bitta renderer orqali answer, source cards, RAG metadata va usage'ni yangilaydi
+- Delayed `/result` transient xatolarda nonce va pollingni saqlab retry qiladi; faqat successful result'dan keyin yakunlanadi
+- Delayed source metadata raw excerpt emas, prompt excerptni tiklash uchun safe numeric/reference qiymatlarni saqlaydi
 - resume prompt `<documents>` va `<approved_action_result>` boundary'larida untrusted XML-safe data sifatida bounded qilinadi
 - resume system, original user, action, RAG va newest history bitta unified prompt budgetda hisoblanadi
 - final exchange va approval `executed` CAS bitta SQLite transactionda yoziladi

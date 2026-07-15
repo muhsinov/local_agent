@@ -38,6 +38,7 @@ let pendingApproval = null;
 let approvalCountdownTimer = null;
 let approvalStatusPollTimer = null;
 let approvalResultDelivered = false;
+let approvalResultRequestInFlight = false;
 
 async function safeJson(response) {
   try {
@@ -171,6 +172,12 @@ function clearApprovalPolling() {
   }
 }
 
+function clearApprovalHash() {
+  if (window.location.hash.startsWith("#approval=")) {
+    window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+  }
+}
+
 function startApprovalPolling() {
   if (approvalStatusPollTimer === null) {
     approvalStatusPollTimer = window.setInterval(pollApprovalStatus, 1000);
@@ -204,9 +211,8 @@ function clearApprovalState() {
   clearApprovalPolling();
   pendingApproval = null;
   approvalResultDelivered = false;
-  if (window.location.hash.startsWith("#approval=")) {
-    window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
-  }
+  approvalResultRequestInFlight = false;
+  clearApprovalHash();
   approvalPanel.hidden = true;
   approveButton.disabled = false;
   rejectButton.disabled = false;
@@ -231,23 +237,51 @@ async function pollApprovalStatus() {
     if (payload.status === "pending") {
       startApprovalCountdown(payload.expires_at);
     }
+    if (payload.status === "executing") {
+      clearApprovalCountdown();
+      startApprovalPolling();
+    }
     if (payload.status === "executed") {
+      clearApprovalCountdown();
       if (pendingApproval?.nonce && !approvalResultDelivered) {
-        const resultResponse = await fetch(`/approvals/${pendingApproval.approvalId}/result`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ nonce: pendingApproval.nonce }),
-        });
-        const result = await safeJson(resultResponse);
-        if (resultResponse.ok && result?.answer && !approvalResultDelivered) {
-          approvalResultDelivered = true;
-          conversationId = result.conversation_id || conversationId;
-          appendMessage(result.answer, "system");
+        if (approvalResultRequestInFlight) {
+          return;
+        }
+        approvalResultRequestInFlight = true;
+        try {
+          const resultResponse = await fetch(`/approvals/${pendingApproval.approvalId}/result`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ nonce: pendingApproval.nonce }),
+          });
+          const result = await safeJson(resultResponse);
+          if (resultResponse.ok && result?.answer) {
+            renderApprovalResult(result);
+            pendingApproval.nonce = null;
+            clearApprovalPolling();
+            clearApprovalHash();
+            return;
+          }
+          if (resultResponse.status >= 400 && resultResponse.status < 500 && resultResponse.status !== 429) {
+            approvalMeta.textContent = apiMessage(result, "Approval resultini olish rad etildi.");
+            pendingApproval.nonce = null;
+            clearApprovalPolling();
+            return;
+          }
+          approvalMeta.textContent = "Final result vaqtincha mavjud emas; qayta uriniladi.";
+          return;
+        } catch (error) {
+          approvalMeta.textContent = "Final resultga ulanish vaqtincha imkonsiz; qayta uriniladi.";
+          return;
+        } finally {
+          approvalResultRequestInFlight = false;
         }
       }
       clearApprovalCountdown();
       clearApprovalPolling();
-      pendingApproval.nonce = null;
+      if (pendingApproval) {
+        pendingApproval.nonce = null;
+      }
       approveButton.disabled = true;
       rejectButton.disabled = true;
       if (!approvalResultDelivered) {
@@ -308,6 +342,7 @@ async function submitApprovalDecision(kind) {
   }
   approveButton.disabled = true;
   rejectButton.disabled = true;
+  clearApprovalCountdown();
   approvalBadge.textContent = kind === "approve" ? "executing" : "rejecting";
   try {
     const response = await fetch(`/approvals/${pendingApproval.approvalId}/${kind}`, {
@@ -336,9 +371,9 @@ async function submitApprovalDecision(kind) {
     approvalBadge.textContent = payload.status;
     approvalMeta.textContent = payload.error_code || `expires=${payload.expires_at}`;
     if (kind === "approve" && payload.answer) {
-      approvalResultDelivered = true;
-      conversationId = payload.conversation_id || conversationId;
-      appendMessage(payload.answer, "system");
+      renderApprovalResult(payload);
+      pendingApproval.nonce = null;
+      clearApprovalHash();
     }
     if (kind === "reject") {
       appendMessage("Action rad etildi.", "system");
@@ -387,6 +422,35 @@ function renderRagSources(sources) {
     card.appendChild(trust);
     ragSources.appendChild(card);
   });
+}
+
+function renderApprovalResult(payload) {
+  if (!payload?.answer || approvalResultDelivered) {
+    return false;
+  }
+  conversationId = payload.conversation_id || conversationId;
+  appendMessage(payload.answer, "system");
+  renderRagSources(payload.sources || []);
+  const rag = payload.rag || {};
+  const usage = payload.usage || {};
+  ragMeta.textContent = `gen=${shortGeneration(rag.generation_id)} • chars=${rag.context_chars || 0}`
+    + (usage.prompt_tokens !== null && usage.prompt_tokens !== undefined
+      ? ` • tokens=${usage.prompt_tokens}/${usage.completion_tokens ?? "?"}`
+      : "");
+  ragWarning.textContent = rag.invalid_citations_removed
+    ? `${rag.invalid_citations_removed} invalid citation olib tashlandi.`
+    : rag.fallback
+      ? "Fallback ishladi. Source ishlatilmagan."
+      : rag.used
+        ? "Approval resume RAG source'lari bilan grounded qilindi."
+        : "Approval resume'da RAG ishlatilmadi.";
+  chatStatus.textContent = rag.used
+    ? "Approval resume hujjatlar bilan grounded qilindi."
+    : rag.fallback
+      ? "Approval resume hujjatlarsiz yaratildi."
+      : "Approval resume RAG'siz yaratildi.";
+  approvalResultDelivered = true;
+  return true;
 }
 
 async function submitChat() {
