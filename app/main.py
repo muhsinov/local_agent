@@ -87,6 +87,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         max_active=active_settings.local_session_max_active,
         session_bytes=active_settings.local_session_token_bytes,
         csrf_bytes=active_settings.local_csrf_token_bytes,
+        max_csrf_tokens=active_settings.local_session_max_csrf_tokens,
     )
     app.add_middleware(
         CORSMiddleware,

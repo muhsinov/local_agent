@@ -20,11 +20,16 @@ class LocalControlPlaneMiddleware(BaseHTTPMiddleware):
 
         origin = request.headers.get("origin")
         referer = request.headers.get("referer")
+        fetch_site = request.headers.get("sec-fetch-site")
         if request.url.path == "/session/bootstrap" and request.method == "POST":
             if origin is not None and not validate_origin(origin, settings.port):
                 return self._deny(request, "LOCAL_ORIGIN_DENIED", "Local Origin talab qilinadi.", "origin")
             if origin is None and referer is not None and not validate_referer(referer, settings.port):
                 return self._deny(request, "LOCAL_ORIGIN_DENIED", "Local Referer talab qilinadi.", "referer")
+            if origin is None and referer is None:
+                return self._deny(request, "LOCAL_ORIGIN_DENIED", "Bootstrap uchun local Origin yoki Referer talab qilinadi.", "origin_missing")
+            if fetch_site is not None and fetch_site != "same-origin":
+                return self._deny(request, "LOCAL_ORIGIN_DENIED", "Local same-origin request talab qilinadi.", "sec_fetch_site")
             return await call_next(request)
 
         if request.method not in SAFE_METHODS:
@@ -32,6 +37,8 @@ class LocalControlPlaneMiddleware(BaseHTTPMiddleware):
                 return self._deny(request, "LOCAL_ORIGIN_DENIED", "Local Origin talab qilinadi.", "origin")
             if origin is None and referer is not None and not validate_referer(referer, settings.port):
                 return self._deny(request, "LOCAL_ORIGIN_DENIED", "Local Referer talab qilinadi.", "referer")
+            if fetch_site is not None and fetch_site != "same-origin":
+                return self._deny(request, "LOCAL_ORIGIN_DENIED", "Local same-origin request talab qilinadi.", "sec_fetch_site")
 
             raw_session = request.cookies.get("local_agent_session")
             is_browser = origin is not None or referer is not None or raw_session is not None

@@ -1,10 +1,12 @@
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.main import create_app
+from app.security.local_control_plane.session_store import LocalSessionStore
 from tests.conftest import FakeOllamaClient, build_settings
 
 
@@ -42,6 +44,47 @@ def test_host_and_origin_validation(tmp_path):
         assert client.get("/health", headers={"host": "localhost.evil.test:8000"}).json()["detail"]["code"] == "LOCAL_HOST_DENIED"
         assert client.get("/health", headers={"host": "8.8.8.8:8000"}).json()["detail"]["code"] == "LOCAL_HOST_DENIED"
         assert client.post("/session/bootstrap", headers={"host": "localhost:8000", "origin": "http://evil.test:8000"}).json()["detail"]["code"] == "LOCAL_ORIGIN_DENIED"
+        assert client.post("/session/bootstrap", headers={"host": "localhost:8000"}).json()["detail"]["code"] == "LOCAL_ORIGIN_DENIED"
+
+
+def test_bootstrap_reuses_session_and_keeps_multiple_tab_tokens():
+    store = LocalSessionStore(ttl_seconds=3600, max_active=2, session_bytes=32, csrf_bytes=32, max_csrf_tokens=2)
+    first = store.bootstrap(None)
+    assert first is not None
+    raw_session, csrf_a, _ = first
+    second = store.bootstrap(raw_session)
+    assert second is not None
+    _, csrf_b, _ = second
+    assert store.active_count() == 1
+    assert store.validate(raw_session, csrf_a)
+    assert store.validate(raw_session, csrf_b)
+    third = store.bootstrap(raw_session)
+    assert third is not None
+    assert store.csrf_token_count(raw_session) == 2
+    assert not store.validate(raw_session, csrf_a)
+    assert store.validate(raw_session, third[1])
+
+
+def test_concurrent_bootstrap_is_atomic_and_does_not_overwrite_tokens():
+    store = LocalSessionStore(ttl_seconds=3600, max_active=2, session_bytes=32, csrf_bytes=32, max_csrf_tokens=16)
+    initial = store.bootstrap(None)
+    assert initial is not None
+    raw_session = initial[0]
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(store.bootstrap, [raw_session, raw_session]))
+    assert all(result is not None for result in results)
+    assert store.active_count() == 1
+    assert all(store.validate(raw_session, result[1]) for result in results if result is not None)
+
+
+def test_new_sessions_hit_limit_but_existing_session_can_reload():
+    store = LocalSessionStore(ttl_seconds=3600, max_active=2, session_bytes=32, csrf_bytes=32)
+    first = store.bootstrap(None)
+    second = store.bootstrap(None)
+    assert first is not None and second is not None
+    assert store.bootstrap(None) is None
+    assert store.bootstrap(first[0]) is not None
+    assert store.active_count() == 2
 
 
 def test_bootstrap_cookie_and_csrf_are_memory_only(tmp_path):
@@ -52,6 +95,28 @@ def test_bootstrap_cookie_and_csrf_are_memory_only(tmp_path):
         with settings.resolved_database_path.open("rb") as handle:
             assert csrf.encode() not in handle.read()
         assert client.cookies.get("local_agent_session")
+
+
+def test_bootstrap_reuses_cookie_and_sets_no_store_headers(tmp_path):
+    client, settings = make_client(tmp_path)
+    with client:
+        first = client.post("/session/bootstrap", headers={"host": "localhost:8000", "origin": "http://localhost:8000"})
+        cookie = client.cookies.get("local_agent_session")
+        second = client.post("/session/bootstrap", headers={"host": "localhost:8000", "origin": "http://localhost:8000"})
+        assert client.cookies.get("local_agent_session") == cookie
+        assert second.headers["cache-control"] == "no-store"
+        assert second.headers["pragma"] == "no-cache"
+        assert settings.local_session_max_csrf_tokens == 16
+        assert first.json()["csrf_token"] != second.json()["csrf_token"]
+
+
+def test_api_token_cannot_bootstrap_without_browser_origin(tmp_path):
+    token = "t" * 32
+    client, _ = make_client(tmp_path, LOCAL_ALLOW_NON_BROWSER_CLIENTS=True, LOCAL_API_TOKEN=token)
+    with client:
+        response = client.post("/session/bootstrap", headers={"host": "localhost:8000", "authorization": f"Bearer {token}"})
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "LOCAL_ORIGIN_DENIED"
 
 
 def test_mutations_require_session_and_csrf(tmp_path):

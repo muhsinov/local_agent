@@ -8,11 +8,15 @@ Primary specification: [TZ.md](TZ.md)
 
 - loopback Host va Origin/Referer validation DNS rebinding va cross-site state-changing requestlarga qarshi ishlaydi
 - browser session `POST /session/bootstrap` orqali bounded in-memory TTL bilan yaratiladi
+- valid cookie reload paytida active session qayta ishlatiladi; bitta session parallel tablar uchun bounded `LOCAL_SESSION_MAX_CSRF_TOKENS` CSRF token saqlaydi
+- bootstrap local Origin yoki Referer talab qiladi va CSRF secret response'i `no-store` bilan qaytariladi
 - POST/PUT/PATCH/DELETE uchun session-bound `X-CSRF-Token` talab qilinadi; approval nonce CSRF token o'rnini bosmaydi
 - CORS explicit configured loopback originlar bilan cheklangan, lekin CORS CSRF himoyasi hisoblanmaydi
 - direct vector mutation va document delete default disabled; vector rebuild tavsiya etilgan approval-gated tool oqimi orqali bajariladi
 - non-browser client default disabled; opt-in uchun kamida 32 character `LOCAL_API_TOKEN` kerak
 - frontend tokenni faqat memory'da saqlaydi va state-changing requestlar uchun yagona `localFetch` wrapper ishlatadi
+- frontend faqat `LOCAL_SESSION_REQUIRED`, `CSRF_TOKEN_REQUIRED` yoki `CSRF_TOKEN_INVALID` uchun bir marta bootstrap qilib original requestni retry qiladi
+- Origin va Sec-Fetch headerlari OS-level local process authentication emas; himoya remote web-origin va tasodifiy unauthenticated client threat modeliga mo'ljallangan
 
 ## Phase 7 imkoniyatlari
 
@@ -140,6 +144,7 @@ Bu faqat model avval cache qilingan bo'lsa ishlaydi.
 - `LOCAL_SESSION_MAX_ACTIVE`
 - `LOCAL_SESSION_TOKEN_BYTES`
 - `LOCAL_CSRF_TOKEN_BYTES`
+- `LOCAL_SESSION_MAX_CSRF_TOKENS`
 - `LOCAL_REQUIRE_CSRF`
 - `LOCAL_REQUIRE_LOOPBACK_HOST`
 - `LOCAL_ALLOW_NON_BROWSER_CLIENTS`

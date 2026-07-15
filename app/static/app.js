@@ -43,6 +43,7 @@ let localCsrfToken = null;
 let localBootstrapPromise = null;
 
 const MUTATION_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+const SESSION_AUTH_ERROR_CODES = new Set(["LOCAL_SESSION_REQUIRED", "CSRF_TOKEN_REQUIRED", "CSRF_TOKEN_INVALID"]);
 
 async function bootstrapLocalSession() {
   if (localBootstrapPromise) {
@@ -74,7 +75,12 @@ async function localFetch(url, options = {}, retry = true) {
     requestOptions.headers["X-CSRF-Token"] = localCsrfToken;
   }
   const response = await fetch(url, requestOptions);
-  if (response.status === 401 && retry) {
+  let authErrorCode = null;
+  if (typeof response.clone === "function") {
+    const payload = await safeJson(response.clone());
+    authErrorCode = payload?.detail?.code || null;
+  }
+  if (retry && (response.status === 401 || SESSION_AUTH_ERROR_CODES.has(authErrorCode))) {
     localCsrfToken = null;
     await bootstrapLocalSession();
     return localFetch(url, options, false);

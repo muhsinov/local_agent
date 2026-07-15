@@ -5,6 +5,6 @@ from datetime import datetime
 @dataclass(frozen=True)
 class LocalSession:
     session_hash: str
-    csrf_hash: str
+    csrf_hashes: tuple[str, ...]
     created_at: datetime
     expires_at: datetime

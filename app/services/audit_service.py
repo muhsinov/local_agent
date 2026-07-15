@@ -60,6 +60,8 @@ def write_audit_log(
             "session_present",
             "origin_present",
             "host_category",
+            "session_reused",
+            "session_created",
         }
     }
     try:

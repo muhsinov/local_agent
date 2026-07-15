@@ -86,6 +86,7 @@ class Settings(BaseSettings):
     local_session_max_active: int = Field(default=20, alias="LOCAL_SESSION_MAX_ACTIVE", ge=1, le=100)
     local_session_token_bytes: int = Field(default=32, alias="LOCAL_SESSION_TOKEN_BYTES", ge=16, le=64)
     local_csrf_token_bytes: int = Field(default=32, alias="LOCAL_CSRF_TOKEN_BYTES", ge=16, le=64)
+    local_session_max_csrf_tokens: int = Field(default=16, alias="LOCAL_SESSION_MAX_CSRF_TOKENS", ge=1, le=64)
     local_require_csrf: bool = Field(default=True, alias="LOCAL_REQUIRE_CSRF")
     local_require_loopback_host: bool = Field(default=True, alias="LOCAL_REQUIRE_LOOPBACK_HOST")
     local_allow_non_browser_clients: bool = Field(default=False, alias="LOCAL_ALLOW_NON_BROWSER_CLIENTS")
