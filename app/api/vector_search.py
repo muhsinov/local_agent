@@ -52,6 +52,9 @@ def _map_database_error() -> ApiError:
 @router.post("/documents/{document_id}/index", response_model=VectorIndexRebuildResponse)
 async def index_document(request: Request, document_id: int) -> VectorIndexRebuildResponse:
     settings = request.app.state.settings
+    if not settings.direct_vector_mutations_enabled:
+        write_audit_log(settings, action="direct_action_denied", status="DIRECT_ACTION_DISABLED", arguments={"document_id": document_id})
+        raise ApiError(403, "DIRECT_ACTION_DISABLED", "Direct vector mutation o'chirilgan.")
     try:
         document = get_document(settings, document_id)
     except sqlite3.Error:
@@ -91,6 +94,9 @@ async def index_document(request: Request, document_id: int) -> VectorIndexRebui
 @router.post("/vector-index/rebuild", response_model=VectorIndexRebuildResponse)
 async def rebuild_index(request: Request) -> VectorIndexRebuildResponse:
     settings = request.app.state.settings
+    if not settings.direct_vector_mutations_enabled:
+        write_audit_log(settings, action="direct_action_denied", status="DIRECT_ACTION_DISABLED", arguments={})
+        raise ApiError(403, "DIRECT_ACTION_DISABLED", "Direct vector mutation o'chirilgan.")
     try:
         state = await _run_vector_operation(request, rebuild_vector_index, settings)
     except ApiError:

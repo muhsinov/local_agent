@@ -131,6 +131,9 @@ def build_settings(tmp_path: Path, **overrides: object) -> Settings:
         "UPLOAD_DIRECTORY": tmp_path / "uploads",
         "EXTRACTED_TEXT_DIRECTORY": tmp_path / "extracted",
         "VECTOR_STORE_DIRECTORY": tmp_path / "vector_store",
+        "LOCAL_CONTROL_PLANE_ENABLED": False,
+        "DIRECT_VECTOR_MUTATIONS_ENABLED": True,
+        "DIRECT_DOCUMENT_DELETE_ENABLED": True,
     }
     values.update(overrides)
     return Settings(**values)

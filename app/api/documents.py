@@ -275,6 +275,9 @@ def get_document_text_preview(
 @router.delete("/{document_id}", response_model=dict)
 def delete_document(request: Request, document_id: int, confirm: bool = Query(default=False)) -> dict:
     settings: Settings = request.app.state.settings
+    if not settings.direct_document_delete_enabled:
+        write_audit_log(settings, action="direct_action_denied", status="DIRECT_ACTION_DISABLED", arguments={"document_id": document_id})
+        raise ApiError(403, "DIRECT_ACTION_DISABLED", "Direct document delete o'chirilgan.")
     if not confirm:
         raise ApiError(400, "CONFIRMATION_REQUIRED", "Delete uchun confirm=true kerak.")
 

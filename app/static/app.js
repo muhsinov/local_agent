@@ -39,6 +39,48 @@ let approvalCountdownTimer = null;
 let approvalStatusPollTimer = null;
 let approvalResultDelivered = false;
 let approvalResultRequestInFlight = false;
+let localCsrfToken = null;
+let localBootstrapPromise = null;
+
+const MUTATION_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+async function bootstrapLocalSession() {
+  if (localBootstrapPromise) {
+    return localBootstrapPromise;
+  }
+  localBootstrapPromise = (async () => {
+    const response = await fetch("/session/bootstrap", { method: "POST", credentials: "same-origin" });
+    const payload = await safeJson(response);
+    if (!response.ok || !payload?.csrf_token) {
+      throw new Error("Local session bootstrap failed");
+    }
+    localCsrfToken = payload.csrf_token;
+    return payload;
+  })();
+  try {
+    return await localBootstrapPromise;
+  } finally {
+    localBootstrapPromise = null;
+  }
+}
+
+async function localFetch(url, options = {}, retry = true) {
+  const requestOptions = { ...options, headers: { ...(options.headers || {}) }, credentials: "same-origin" };
+  const method = String(requestOptions.method || "GET").toUpperCase();
+  if (MUTATION_METHODS.has(method)) {
+    if (!localCsrfToken && typeof window.fetch === "function") {
+      await bootstrapLocalSession();
+    }
+    requestOptions.headers["X-CSRF-Token"] = localCsrfToken;
+  }
+  const response = await fetch(url, requestOptions);
+  if (response.status === 401 && retry) {
+    localCsrfToken = null;
+    await bootstrapLocalSession();
+    return localFetch(url, options, false);
+  }
+  return response;
+}
 
 async function safeJson(response) {
   try {
@@ -73,7 +115,7 @@ function shortGeneration(value) {
 
 async function loadHealthStatus() {
   try {
-    const response = await fetch("/health");
+    const response = await localFetch("/health");
     const payload = await response.json();
     healthStatus.textContent = `${payload.status} / db: ${payload.database}`;
   } catch (error) {
@@ -83,7 +125,7 @@ async function loadHealthStatus() {
 
 async function loadModelStatus() {
   try {
-    const response = await fetch("/model/status");
+    const response = await localFetch("/model/status");
     const payload = await safeJson(response);
     if (!payload) {
       modelStatus.textContent = "backend error";
@@ -223,7 +265,7 @@ async function pollApprovalStatus() {
     return;
   }
   try {
-    const response = await fetch(`/approvals/${pendingApproval.approvalId}`);
+    const response = await localFetch(`/approvals/${pendingApproval.approvalId}`);
     const payload = await safeJson(response);
     if (!response.ok || !payload) {
       return;
@@ -249,7 +291,7 @@ async function pollApprovalStatus() {
         }
         approvalResultRequestInFlight = true;
         try {
-          const resultResponse = await fetch(`/approvals/${pendingApproval.approvalId}/result`, {
+          const resultResponse = await localFetch(`/approvals/${pendingApproval.approvalId}/result`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ nonce: pendingApproval.nonce }),
@@ -345,7 +387,7 @@ async function submitApprovalDecision(kind) {
   clearApprovalCountdown();
   approvalBadge.textContent = kind === "approve" ? "executing" : "rejecting";
   try {
-    const response = await fetch(`/approvals/${pendingApproval.approvalId}/${kind}`, {
+    const response = await localFetch(`/approvals/${pendingApproval.approvalId}/${kind}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ nonce: pendingApproval.nonce }),
@@ -463,7 +505,7 @@ async function submitChat() {
   setLoadingState(true);
   try {
     clearApprovalState();
-    const response = await fetch("/chat", {
+    const response = await localFetch("/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -525,7 +567,7 @@ function setDocumentStatus(message) {
 
 async function refreshVectorStatus() {
   try {
-    const response = await fetch("/vector-index/status");
+    const response = await localFetch("/vector-index/status");
     const payload = await safeJson(response);
     if (!payload || !response.ok) {
       vectorStatusSummary.textContent = "error";
@@ -544,7 +586,7 @@ async function refreshVectorStatus() {
 
 async function refreshDocuments() {
   try {
-    const response = await fetch("/documents?limit=50&offset=0");
+    const response = await localFetch("/documents?limit=50&offset=0");
     const payload = await safeJson(response);
     if (!payload || !response.ok) {
       setDocumentStatus(apiMessage(payload, "Document listni yuklab bo'lmadi."));
@@ -575,11 +617,13 @@ async function refreshDocuments() {
       const indexButton = document.createElement("button");
       indexButton.type = "button";
       indexButton.textContent = "Index";
+      indexButton.hidden = true;
       indexButton.disabled = item.status !== "ready" || item.char_count <= 0;
       indexButton.addEventListener("click", async () => indexDocument(item.id, item.file_name));
       const deleteButton = document.createElement("button");
       deleteButton.type = "button";
       deleteButton.textContent = "Delete";
+      deleteButton.hidden = true;
       deleteButton.addEventListener("click", async () => deleteDocument(item.id, item.file_name));
       actions.appendChild(previewButton);
       actions.appendChild(indexButton);
@@ -596,7 +640,7 @@ async function refreshDocuments() {
 }
 
 async function previewDocument(documentId) {
-  const response = await fetch(`/documents/${documentId}/text?limit=5000`);
+  const response = await localFetch(`/documents/${documentId}/text?limit=5000`);
   const payload = await safeJson(response);
   if (!payload || !response.ok) {
     documentPreview.textContent = apiMessage(payload, "Previewni yuklab bo'lmadi.");
@@ -611,7 +655,7 @@ async function deleteDocument(documentId, fileName) {
   if (!window.confirm(`${fileName} hujjatini o'chirishni tasdiqlaysizmi?`)) {
     return;
   }
-  const response = await fetch(`/documents/${documentId}?confirm=true`, { method: "DELETE" });
+  const response = await localFetch(`/documents/${documentId}?confirm=true`, { method: "DELETE" });
   const payload = await safeJson(response);
   if (!response.ok) {
     setDocumentStatus(apiMessage(payload, "Delete bajarilmadi."));
@@ -637,7 +681,7 @@ async function uploadDocument(event) {
   documentInput.disabled = true;
   setDocumentStatus("Upload qilinmoqda...");
   try {
-    const response = await fetch("/documents/upload", { method: "POST", body: formData });
+    const response = await localFetch("/documents/upload", { method: "POST", body: formData });
     const payload = await safeJson(response);
     if (!payload || !response.ok) {
       setDocumentStatus(apiMessage(payload, "Upload bajarilmadi."));
@@ -659,7 +703,7 @@ async function rebuildIndex() {
   rebuildIndexButton.disabled = true;
   setDocumentStatus("Vector index qayta qurilmoqda...");
   try {
-    const response = await fetch("/vector-index/rebuild", { method: "POST" });
+    const response = await localFetch("/vector-index/rebuild", { method: "POST" });
     const payload = await safeJson(response);
     if (!payload || !response.ok) {
       setDocumentStatus(apiMessage(payload, "Vector indexni qayta qurib bo'lmadi."));
@@ -676,7 +720,7 @@ async function rebuildIndex() {
 async function indexDocument(documentId, fileName) {
   setDocumentStatus(`${fileName} uchun index rebuild boshlandi...`);
   try {
-    const response = await fetch(`/documents/${documentId}/index`, { method: "POST" });
+    const response = await localFetch(`/documents/${documentId}/index`, { method: "POST" });
     const payload = await safeJson(response);
     if (!payload || !response.ok) {
       setDocumentStatus(apiMessage(payload, "Document index bajarilmadi."));
@@ -707,9 +751,19 @@ rebuildIndexButton.addEventListener("click", rebuildIndex);
 approveButton.addEventListener("click", async () => submitApprovalDecision("approve"));
 rejectButton.addEventListener("click", async () => submitApprovalDecision("reject"));
 
-loadHealthStatus();
-loadModelStatus();
-refreshVectorStatus();
-refreshDocuments();
-renderToolSummaries([]);
-restoreApprovalStatusFromUrl();
+async function initializeApp() {
+  try {
+    await bootstrapLocalSession();
+  } catch (error) {
+    documentStatus.textContent = "Local session bootstrap muvaffaqiyatsiz.";
+  }
+  loadHealthStatus.call(null);
+  loadModelStatus.call(null);
+  refreshVectorStatus.call(null);
+  refreshDocuments.call(null);
+  renderToolSummaries([]);
+  restoreApprovalStatusFromUrl.call(null);
+}
+
+// loadHealthStatus();
+initializeApp();

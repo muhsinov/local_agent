@@ -16,6 +16,7 @@ def build_test_settings(tmp_path: Path) -> Settings:
         UPLOAD_DIRECTORY=tmp_path / "uploads",
         EXTRACTED_TEXT_DIRECTORY=tmp_path / "extracted",
         VECTOR_STORE_DIRECTORY=tmp_path / "vector_store",
+        LOCAL_CONTROL_PLANE_ENABLED=False,
     )
 
 

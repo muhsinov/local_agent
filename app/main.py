@@ -14,6 +14,7 @@ from app.api.documents import router as documents_router
 from app.api.errors import ApiError, error_response
 from app.api.health import router as health_router
 from app.api.model import router as model_router
+from app.api.session import router as session_router
 from app.api.vector_search import router as vector_router
 from app.config import PROJECT_ROOT, Settings, get_settings
 from app.database import initialize_database
@@ -24,6 +25,8 @@ from app.agent.tool_operation_coordinator import ToolOperationCoordinator
 from app.rag.index_manager import ensure_vector_directories, reconcile_vector_index
 from app.rag.operation_coordinator import VectorOperationCoordinator
 from app.services.document_recovery_service import reconcile_document_quarantine
+from app.security.local_control_plane.middleware import LocalControlPlaneMiddleware
+from app.security.local_control_plane.session_store import LocalSessionStore
 
 
 def ensure_runtime_directories(settings: Settings) -> None:
@@ -79,23 +82,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.vector_operation_coordinator = None
     app.state.tool_operation_coordinator = None
     app.state.approval_operation_coordinator = None
+    app.state.local_session_store = LocalSessionStore(
+        ttl_seconds=active_settings.local_session_ttl_seconds,
+        max_active=active_settings.local_session_max_active,
+        session_bytes=active_settings.local_session_token_bytes,
+        csrf_bytes=active_settings.local_csrf_token_bytes,
+    )
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[
-            "http://localhost",
-            "http://localhost:3000",
-            "http://127.0.0.1",
-            "http://127.0.0.1:3000",
-            "http://127.0.0.1:8000",
-            "http://localhost:8000",
-        ],
+        allow_origins=[f"http://localhost:{active_settings.port}", f"http://127.0.0.1:{active_settings.port}", f"http://[::1]:{active_settings.port}"],
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=["GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE"],
+        allow_headers=["Content-Type", "X-CSRF-Token", "Authorization"],
     )
+    app.add_middleware(LocalControlPlaneMiddleware)
     app.mount("/static", StaticFiles(directory=static_directory), name="static")
     app.include_router(health_router)
     app.include_router(model_router)
+    app.include_router(session_router)
     app.include_router(chat_router)
     app.include_router(approvals_router)
     app.include_router(documents_router)

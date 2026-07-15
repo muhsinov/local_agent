@@ -4,6 +4,16 @@
 
 Primary specification: [TZ.md](TZ.md)
 
+## Phase 8 local control-plane security
+
+- loopback Host va Origin/Referer validation DNS rebinding va cross-site state-changing requestlarga qarshi ishlaydi
+- browser session `POST /session/bootstrap` orqali bounded in-memory TTL bilan yaratiladi
+- POST/PUT/PATCH/DELETE uchun session-bound `X-CSRF-Token` talab qilinadi; approval nonce CSRF token o'rnini bosmaydi
+- CORS explicit configured loopback originlar bilan cheklangan, lekin CORS CSRF himoyasi hisoblanmaydi
+- direct vector mutation va document delete default disabled; vector rebuild tavsiya etilgan approval-gated tool oqimi orqali bajariladi
+- non-browser client default disabled; opt-in uchun kamida 32 character `LOCAL_API_TOKEN` kerak
+- frontend tokenni faqat memory'da saqlaydi va state-changing requestlar uchun yagona `localFetch` wrapper ishlatadi
+
 ## Phase 7 imkoniyatlari
 
 - document upload, preview va delete
@@ -125,12 +135,24 @@ Bu faqat model avval cache qilingan bo'lsa ishlaydi.
 - `APPROVAL_NONCE_BYTES`
 - `APPROVAL_MAX_PENDING`
 - `APPROVAL_EXECUTION_TIMEOUT_SECONDS`
+- `LOCAL_CONTROL_PLANE_ENABLED`
+- `LOCAL_SESSION_TTL_SECONDS`
+- `LOCAL_SESSION_MAX_ACTIVE`
+- `LOCAL_SESSION_TOKEN_BYTES`
+- `LOCAL_CSRF_TOKEN_BYTES`
+- `LOCAL_REQUIRE_CSRF`
+- `LOCAL_REQUIRE_LOOPBACK_HOST`
+- `LOCAL_ALLOW_NON_BROWSER_CLIENTS`
+- `LOCAL_API_TOKEN`
+- `DIRECT_VECTOR_MUTATIONS_ENABLED`
+- `DIRECT_DOCUMENT_DELETE_ENABLED`
 
 ## API
 
 - `GET /health`
 - `GET /model/status`
 - `POST /chat`
+- `POST /session/bootstrap`
 - `GET /approvals/{id}`
 - `POST /approvals/{id}/approve`
 - `POST /approvals/{id}/result`
@@ -145,6 +167,8 @@ Bu faqat model avval cache qilingan bo'lsa ishlaydi.
 - `GET /vector-index/status`
 - `POST /vector-search`
 - `POST /chat` with `use_rag` and optional `document_ids`
+
+State-changing browser API requestlari avval local session bootstrap qiladi va `X-CSRF-Token` yuboradi. Direct index/rebuild/delete endpointlari default holatda yopiq; approval workflow mavjud `rebuild_vector_index` action uchun ishlaydi.
 
 ## RAG chat
 

@@ -53,6 +53,13 @@ def write_audit_log(
             "conversation_id",
             "expired",
             "argument_hash_prefix",
+            "method",
+            "route_template",
+            "reason_code",
+            "browser",
+            "session_present",
+            "origin_present",
+            "host_category",
         }
     }
     try:

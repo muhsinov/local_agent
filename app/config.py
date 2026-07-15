@@ -81,6 +81,17 @@ class Settings(BaseSettings):
     approval_require_local_origin: bool = Field(default=True, alias="APPROVAL_REQUIRE_LOCAL_ORIGIN")
     approval_allow_rebuild_vector_index: bool = Field(default=True, alias="APPROVAL_ALLOW_REBUILD_VECTOR_INDEX")
     approval_allow_rename_conversation: bool = Field(default=True, alias="APPROVAL_ALLOW_RENAME_CONVERSATION")
+    local_control_plane_enabled: bool = Field(default=True, alias="LOCAL_CONTROL_PLANE_ENABLED")
+    local_session_ttl_seconds: int = Field(default=3600, alias="LOCAL_SESSION_TTL_SECONDS", ge=300, le=86400)
+    local_session_max_active: int = Field(default=20, alias="LOCAL_SESSION_MAX_ACTIVE", ge=1, le=100)
+    local_session_token_bytes: int = Field(default=32, alias="LOCAL_SESSION_TOKEN_BYTES", ge=16, le=64)
+    local_csrf_token_bytes: int = Field(default=32, alias="LOCAL_CSRF_TOKEN_BYTES", ge=16, le=64)
+    local_require_csrf: bool = Field(default=True, alias="LOCAL_REQUIRE_CSRF")
+    local_require_loopback_host: bool = Field(default=True, alias="LOCAL_REQUIRE_LOOPBACK_HOST")
+    local_allow_non_browser_clients: bool = Field(default=False, alias="LOCAL_ALLOW_NON_BROWSER_CLIENTS")
+    local_api_token: str = Field(default="", alias="LOCAL_API_TOKEN")
+    direct_vector_mutations_enabled: bool = Field(default=False, alias="DIRECT_VECTOR_MUTATIONS_ENABLED")
+    direct_document_delete_enabled: bool = Field(default=False, alias="DIRECT_DOCUMENT_DELETE_ENABLED")
     embedding_model_name: str = Field(
         default="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
         alias="EMBEDDING_MODEL_NAME",
@@ -191,6 +202,8 @@ class Settings(BaseSettings):
             raise ValueError("AGENT_TOOL_TIMEOUT_SECONDS AGENT_TOTAL_TIMEOUT_SECONDS dan katta bo'lishi mumkin emas.")
         if self.agent_max_tool_calls > self.agent_max_iterations:
             raise ValueError("AGENT_MAX_TOOL_CALLS AGENT_MAX_ITERATIONS dan katta bo'lishi mumkin emas.")
+        if self.local_allow_non_browser_clients and len(self.local_api_token) < 32:
+            raise ValueError("LOCAL_API_TOKEN kamida 32 character bo'lishi kerak.")
         return self
 
     @property
