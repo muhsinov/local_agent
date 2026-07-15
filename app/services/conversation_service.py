@@ -2,6 +2,7 @@ import sqlite3
 
 from app.config import Settings
 from app.database import connection_scope
+from app.approval.errors import ApprovalFinalizationError
 
 
 def conversation_exists(settings: Settings, conversation_id: int) -> bool:
@@ -93,6 +94,59 @@ def save_exchange(
             connection.rollback()
             raise
 
+    return int(active_conversation_id)
+
+
+def save_exchange_and_finalize_approval(
+    settings: Settings,
+    *,
+    approval_id: str,
+    conversation_id: int | None,
+    user_message: str,
+    assistant_message: str,
+) -> int:
+    """Persist the exchange and execute the approval CAS in one transaction."""
+
+    with connection_scope(settings) as connection:
+        try:
+            connection.execute("BEGIN IMMEDIATE;")
+            active_conversation_id = conversation_id
+            if active_conversation_id is not None:
+                exists = connection.execute(
+                    "SELECT 1 FROM conversations WHERE id = ?;", (active_conversation_id,)
+                ).fetchone()
+                if exists is None:
+                    raise ApprovalFinalizationError(404, "CONVERSATION_NOT_FOUND", "Conversation topilmadi.")
+            else:
+                active_conversation_id = create_conversation(connection, _build_conversation_title(user_message))
+
+            connection.execute(
+                "INSERT INTO messages (conversation_id, role, content) VALUES (?, 'user', ?);",
+                (active_conversation_id, user_message),
+            )
+            connection.execute(
+                "INSERT INTO messages (conversation_id, role, content) VALUES (?, 'assistant', ?);",
+                (active_conversation_id, assistant_message),
+            )
+            changed = connection.execute(
+                """
+                UPDATE approval_requests
+                SET status = 'executed', completed_at = CURRENT_TIMESTAMP,
+                    error_code = NULL, execution_result_json = '{"ok":true}'
+                WHERE id = ? AND status = 'executing';
+                """,
+                (approval_id,),
+            ).rowcount
+            if changed != 1:
+                raise ApprovalFinalizationError(
+                    500,
+                    "APPROVAL_TERMINAL_TRANSITION_FAILED",
+                    "Approval terminal holatga o'tkazilmadi.",
+                )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
     return int(active_conversation_id)
 
 

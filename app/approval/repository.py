@@ -1,6 +1,7 @@
 import json
 import sqlite3
 
+from app.approval.errors import ApprovalError
 from app.approval.models import ApprovalRecord, ApprovalRequest
 from app.database import connection_scope
 
@@ -25,6 +26,7 @@ def _row_to_record(row: sqlite3.Row) -> ApprovalRecord:
         completed_at=str(row["completed_at"]) if row["completed_at"] is not None else None,
         error_code=str(row["error_code"]) if row["error_code"] is not None else None,
         execution_result_json=str(row["execution_result_json"]) if row["execution_result_json"] is not None else None,
+        execution_deadline_at=str(row["execution_deadline_at"]) if row["execution_deadline_at"] is not None else None,
     )
 
 
@@ -41,6 +43,42 @@ def expire_pending_approvals(settings) -> int:
         )
         connection.commit()
         return int(cursor.rowcount)
+
+
+def recover_stale_executions(settings, active_approval_ids: set[str] | None = None) -> int:
+    active_ids = active_approval_ids or set()
+    with connection_scope(settings) as connection:
+        rows = connection.execute(
+            """
+            SELECT id FROM approval_requests
+            WHERE status = 'executing'
+              AND (
+                    (execution_deadline_at IS NOT NULL AND execution_deadline_at <= CURRENT_TIMESTAMP)
+                    OR (
+                        execution_deadline_at IS NULL
+                        AND executing_at <= datetime('now', '-' || ? || ' seconds')
+                    )
+              );
+            """,
+            (settings.approval_execution_timeout_seconds,),
+        ).fetchall()
+        recovered = 0
+        for row in rows:
+            approval_id = str(row["id"])
+            if approval_id in active_ids:
+                continue
+            cursor = connection.execute(
+                """
+                UPDATE approval_requests
+                SET status = 'failed', completed_at = CURRENT_TIMESTAMP,
+                    error_code = 'APPROVAL_EXECUTION_INTERRUPTED'
+                WHERE id = ? AND status = 'executing';
+                """,
+                (approval_id,),
+            )
+            recovered += int(cursor.rowcount)
+        connection.commit()
+        return recovered
 
 
 def count_pending_approvals(settings) -> int:
@@ -64,10 +102,22 @@ def create_approval(
     document_ids_json: str | None,
     safe_summary: str,
     expiry_seconds: int,
+    max_pending: int | None = None,
 ) -> ApprovalRequest:
     with connection_scope(settings) as connection:
-        connection.execute("BEGIN;")
+        connection.execute("BEGIN IMMEDIATE;")
         try:
+            connection.execute(
+                """
+                UPDATE approval_requests
+                SET status = 'expired', completed_at = CURRENT_TIMESTAMP
+                WHERE status = 'pending' AND expires_at <= CURRENT_TIMESTAMP;
+                """
+            )
+            pending = connection.execute("SELECT COUNT(*) FROM approval_requests WHERE status = 'pending';").fetchone()
+            pending_limit = settings.approval_max_pending if max_pending is None else max_pending
+            if pending and int(pending[0]) >= pending_limit:
+                raise ApprovalError(409, "APPROVAL_PENDING_LIMIT", "Pending approval limiti oshdi.")
             connection.execute(
                 """
                 INSERT INTO approval_requests (
@@ -138,12 +188,13 @@ def mark_executing(settings, approval_id: str) -> int:
             """
             UPDATE approval_requests
             SET status = 'executing',
-                executing_at = CURRENT_TIMESTAMP
+                executing_at = CURRENT_TIMESTAMP,
+                execution_deadline_at = datetime('now', '+' || ? || ' seconds')
             WHERE id = ?
               AND status = 'pending'
               AND expires_at > CURRENT_TIMESTAMP;
             """,
-            (approval_id,),
+            (settings.approval_execution_timeout_seconds, approval_id),
         )
         connection.commit()
         return int(cursor.rowcount)
@@ -173,7 +224,7 @@ def finalize_approval(
     status: str,
     error_code: str | None = None,
     execution_result: dict | None = None,
-) -> None:
+) -> int:
     payload = json.dumps(execution_result, ensure_ascii=False) if execution_result is not None else None
     with connection_scope(settings) as connection:
         connection.execute(
@@ -183,8 +234,20 @@ def finalize_approval(
                 completed_at = CURRENT_TIMESTAMP,
                 error_code = ?,
                 execution_result_json = ?
-            WHERE id = ?;
+            WHERE id = ? AND status = 'executing';
             """,
             (status, error_code, payload, approval_id),
         )
+        affected = int(connection.execute("SELECT changes();").fetchone()[0])
         connection.commit()
+        if affected != 1:
+            raise ApprovalError(
+                500,
+                "APPROVAL_TERMINAL_TRANSITION_FAILED",
+                "Approval terminal holatga o'tkazilmadi.",
+            )
+        return affected
+
+
+def mark_failed(settings, approval_id: str, error_code: str) -> int:
+    return finalize_approval(settings, approval_id=approval_id, status="failed", error_code=error_code)

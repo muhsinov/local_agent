@@ -36,6 +36,7 @@ const previewMeta = document.getElementById("preview-meta");
 let conversationId = null;
 let pendingApproval = null;
 let approvalCountdownTimer = null;
+let approvalStatusPollTimer = null;
 
 async function safeJson(response) {
   try {
@@ -160,14 +161,44 @@ function clearApprovalTimer() {
     window.clearInterval(approvalCountdownTimer);
     approvalCountdownTimer = null;
   }
+  if (approvalStatusPollTimer !== null) {
+    window.clearInterval(approvalStatusPollTimer);
+    approvalStatusPollTimer = null;
+  }
 }
 
 function clearApprovalState() {
   clearApprovalTimer();
   pendingApproval = null;
+  if (window.location.hash.startsWith("#approval=")) {
+    window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+  }
   approvalPanel.hidden = true;
   approveButton.disabled = false;
   rejectButton.disabled = false;
+}
+
+async function pollApprovalStatus() {
+  if (!pendingApproval) {
+    return;
+  }
+  try {
+    const response = await fetch(`/approvals/${pendingApproval.approvalId}`);
+    const payload = await safeJson(response);
+    if (!response.ok || !payload) {
+      return;
+    }
+    approvalBadge.textContent = payload.status;
+    approvalMeta.textContent = payload.error_code || `expires=${payload.expires_at}`;
+    if (["executed", "failed", "rejected", "expired"].includes(payload.status)) {
+      clearApprovalTimer();
+      pendingApproval.nonce = null;
+      approveButton.disabled = true;
+      rejectButton.disabled = true;
+    }
+  } catch (error) {
+    approvalMeta.textContent = "Approval statusini olish vaqtincha imkonsiz.";
+  }
 }
 
 function renderApprovalCard(approval) {
@@ -178,6 +209,7 @@ function renderApprovalCard(approval) {
     toolName: approval.tool_name,
     expiresAt: approval.expires_at,
   };
+  window.history.replaceState(null, "", `#approval=${encodeURIComponent(approval.approval_id)}`);
   approvalPanel.hidden = false;
   approvalBadge.textContent = "pending";
   approvalSummary.textContent = approval.safe_summary;
@@ -199,6 +231,20 @@ function renderApprovalCard(approval) {
 
   refreshMeta();
   approvalCountdownTimer = window.setInterval(refreshMeta, 1000);
+}
+
+async function restoreApprovalStatusFromUrl() {
+  const match = window.location.hash.match(/^#approval=([^&]+)$/);
+  if (!match) {
+    return;
+  }
+  pendingApproval = { approvalId: decodeURIComponent(match[1]), nonce: null };
+  approvalPanel.hidden = false;
+  approvalBadge.textContent = "loading";
+  approvalSummary.textContent = "Approval statusi yuklanmoqda...";
+  approveButton.disabled = true;
+  rejectButton.disabled = true;
+  await pollApprovalStatus();
 }
 
 async function submitApprovalDecision(kind) {
@@ -225,6 +271,11 @@ async function submitApprovalDecision(kind) {
       approvalMeta.textContent = apiMessage(payload, "Approval bajarilmadi.");
       approveButton.disabled = false;
       rejectButton.disabled = false;
+      return;
+    }
+    if (payload.status === "executing") {
+      pendingApproval.nonce = null;
+      approvalStatusPollTimer = window.setInterval(pollApprovalStatus, 1000);
       return;
     }
     pendingApproval.nonce = null;
@@ -537,3 +588,4 @@ loadModelStatus();
 refreshVectorStatus();
 refreshDocuments();
 renderToolSummaries([]);
+restoreApprovalStatusFromUrl();

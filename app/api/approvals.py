@@ -1,6 +1,6 @@
 import asyncio
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Response
 
 from app.agent.registry import build_default_registry
 from app.approval.errors import ApprovalError
@@ -56,7 +56,8 @@ async def _ollama_call(request: Request, messages: list[dict[str, str]]):
 def get_approval_status(request: Request, approval_id: str) -> ApprovalStatusResponse:
     service = ApprovalService(request.app.state.settings)
     try:
-        approval = service.get_public(approval_id)
+        coordinator = request.app.state.approval_operation_coordinator
+        approval = service.get_public(approval_id, coordinator.active_ids())
     except ApprovalError as exc:
         raise ApiError(exc.status_code, exc.code, exc.message) from exc
     return _public_status(approval)
@@ -67,7 +68,8 @@ def reject_approval(request: Request, approval_id: str, payload: ApprovalDecisio
     service = ApprovalService(request.app.state.settings)
     origin = request.headers.get("origin") or request.headers.get("referer")
     try:
-        approval = service.reject(approval_id, payload.nonce, origin)
+        coordinator = request.app.state.approval_operation_coordinator
+        approval = service.reject(approval_id, payload.nonce, origin, coordinator.active_ids())
     except ApprovalError as exc:
         raise ApiError(exc.status_code, exc.code, exc.message) from exc
     return _public_status(approval)
@@ -78,11 +80,17 @@ async def approve_approval(
     request: Request,
     approval_id: str,
     payload: ApprovalDecisionRequest,
+    response: Response,
 ) -> ApprovalDecisionResponse:
     settings = request.app.state.settings
     service = ApprovalService(settings)
     registry = build_default_registry(settings, request.app.state.vector_operation_coordinator)
-    executor = ApprovalExecutor(settings, registry, request.app.state.vector_operation_coordinator)
+    executor = ApprovalExecutor(
+        settings,
+        registry,
+        request.app.state.vector_operation_coordinator,
+        request.app.state.approval_operation_coordinator,
+    )
     origin = request.headers.get("origin") or request.headers.get("referer")
     try:
         result = await executor.approve(
@@ -105,6 +113,8 @@ async def approve_approval(
     except OllamaInvalidResponseError:
         raise ApiError(502, "OLLAMA_INVALID_RESPONSE", "Ollama noto'g'ri javob qaytardi.") from None
     approval = result["approval"]
+    if approval.status == "executing":
+        response.status_code = 202
     return ApprovalDecisionResponse(
         approval_id=approval.id,
         conversation_id=approval.conversation_id,

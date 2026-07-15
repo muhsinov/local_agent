@@ -5,7 +5,7 @@ from pathlib import Path
 from app.config import Settings, get_settings
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 EXPECTED_TABLES = (
     "conversations",
     "messages",
@@ -76,6 +76,7 @@ APPROVAL_REQUEST_COLUMNS = {
     "completed_at",
     "error_code",
     "execution_result_json",
+    "execution_deadline_at",
 }
 
 
@@ -235,6 +236,7 @@ def create_approval_request_tables(connection: sqlite3.Connection) -> None:
             completed_at TEXT NULL,
             error_code TEXT NULL,
             execution_result_json TEXT NULL,
+            execution_deadline_at TEXT NULL,
             FOREIGN KEY(conversation_id) REFERENCES conversations(id)
         );
         """
@@ -313,6 +315,8 @@ def create_tables(connection: sqlite3.Connection) -> None:
     create_document_chunk_tables(connection)
     ensure_vector_index_state_row(connection)
     create_approval_request_tables(connection)
+    if "execution_deadline_at" not in get_table_columns(connection, "approval_requests"):
+        connection.execute("ALTER TABLE approval_requests ADD COLUMN execution_deadline_at TEXT NULL;")
     create_schema_version_table(connection)
 
 

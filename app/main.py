@@ -17,7 +17,8 @@ from app.api.model import router as model_router
 from app.api.vector_search import router as vector_router
 from app.config import PROJECT_ROOT, Settings, get_settings
 from app.database import initialize_database
-from app.approval.repository import expire_pending_approvals
+from app.approval.repository import expire_pending_approvals, recover_stale_executions
+from app.approval.operation_coordinator import ApprovalOperationCoordinator
 from app.llm.ollama_client import OllamaClient
 from app.agent.tool_operation_coordinator import ToolOperationCoordinator
 from app.rag.index_manager import ensure_vector_directories, reconcile_vector_index
@@ -31,6 +32,7 @@ def ensure_runtime_directories(settings: Settings) -> None:
     ensure_vector_directories(settings)
     initialize_database(settings)
     expire_pending_approvals(settings)
+    recover_stale_executions(settings)
     reconcile_document_quarantine(settings)
     reconcile_vector_index(settings)
 
@@ -55,6 +57,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 app.state.vector_operation_coordinator = VectorOperationCoordinator()
             if not hasattr(app.state, "tool_operation_coordinator") or app.state.tool_operation_coordinator is None:
                 app.state.tool_operation_coordinator = ToolOperationCoordinator()
+            if not hasattr(app.state, "approval_operation_coordinator") or app.state.approval_operation_coordinator is None:
+                app.state.approval_operation_coordinator = ApprovalOperationCoordinator()
             ensure_runtime_directories(active_settings)
             yield
         finally:
@@ -62,6 +66,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 await app.state.vector_operation_coordinator.shutdown()
             if getattr(app.state, "tool_operation_coordinator", None) is not None:
                 await app.state.tool_operation_coordinator.shutdown()
+            if getattr(app.state, "approval_operation_coordinator", None) is not None:
+                await app.state.approval_operation_coordinator.shutdown()
             if created_client:
                 await app.state.ollama_client.close()
 
@@ -72,6 +78,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.document_semaphore = None
     app.state.vector_operation_coordinator = None
     app.state.tool_operation_coordinator = None
+    app.state.approval_operation_coordinator = None
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[

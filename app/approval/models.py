@@ -25,3 +25,4 @@ class ApprovalRecord(ApprovalRequest):
     completed_at: str | None
     error_code: str | None
     execution_result_json: str | None
+    execution_deadline_at: str | None

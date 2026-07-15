@@ -1,6 +1,6 @@
-from app.agent.errors import AgentError
+from app.approval.errors import ApprovalError
 
 
 def ensure_approvals_enabled(settings) -> None:
     if not settings.approvals_enabled:
-        raise AgentError(403, "APPROVALS_DISABLED", "Approval workflow hozir o'chirilgan.")
+        raise ApprovalError(403, "APPROVALS_DISABLED", "Approval workflow hozir o'chirilgan.")
